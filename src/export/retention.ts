@@ -33,7 +33,7 @@ export async function applyRetention(outDir: string, keep: number, log: Logger):
     const abs = path.join(outDir, stamp);
     // Recheck at the point of deletion: do not prune if the archive changed
     // since the inventory was assembled.
-    if (!await isVerifiedSnapshot(abs)) {
+    if (!(await isVerifiedSnapshot(abs))) {
       log.warn({ preserved: abs }, "retention skipped changed or invalid snapshot");
       continue;
     }
