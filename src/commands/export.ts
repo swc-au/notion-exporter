@@ -5,6 +5,7 @@ import { requireToken } from "../config.js";
 import { collectLocalAssetPaths } from "../export/assetReferences.js";
 import type { AssetRecord } from "../export/assets.js";
 import { createAssetCollector, rewriteBlocksWithAssets, safeUrlForLog } from "../export/assets.js";
+import { attachmentRequirements } from "../export/attachmentRequirements.js";
 import { finalizeSite } from "../export/finalizeAssets.js";
 import type { SitemapEntry } from "../export/html.js";
 import {
@@ -857,6 +858,14 @@ async function backfillSkippedDatabaseViews(
   }
 }
 
+async function localizeRequiredAttachments(raw: unknown, ctx: PhaseContext): Promise<void> {
+  for (const requirement of attachmentRequirements(raw)) {
+    if (requirement.target.local_path) continue;
+    const record = await ctx.assets.collect(requirement.url);
+    requirement.target.local_path = record.localPath;
+  }
+}
+
 // --- Phase: fetch + render databases (phase 1) ------------------------------
 // Pages can inline a child_database block as a live-style table view, so we
 // process databases first and stash rows in `dbDataById` for the page phase.
@@ -909,6 +918,11 @@ async function fetchAndRenderDatabases(
           d.rows.map((row) => localizeRowCoverIcon(row, ctx.assets, ctx.log, refreshRowPage)),
         );
       }
+      // Honour the acquisition opt-out, while sealing still refuses missing required bytes.
+      const attachmentRows = ctx.cfg.render.rowMedia
+        ? d.rows
+        : d.rows.map((row) => ({ ...(row as Record<string, unknown>), icon: null, cover: null }));
+      await localizeRequiredAttachments({ database: d.database, rows: attachmentRows }, ctx);
       // Register in dbDataById AFTER the rows have local_path so any sibling
       // page rendering off this map sees the localized references. Forward
       // the data-source schema too so the renderer can read option order
@@ -1051,6 +1065,7 @@ async function fetchAndRenderPages(
         }
       }
 
+      await localizeRequiredAttachments({ page: p.page, blocks: p.blocks, comments }, ctx);
       const self = ctx.pageIndex.get(p.id);
       const fromDir = self ? path.dirname(self.mdAbsPath) : ctx.paths.markdown;
       const children = (ctx.childrenMap.get(p.id) ?? [])
