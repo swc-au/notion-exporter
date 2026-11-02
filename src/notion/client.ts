@@ -122,12 +122,20 @@ export function asPaginatedList<T>(res: unknown): PaginatedList<T> {
   if (r.has_more && (typeof r.next_cursor !== "string" || r.next_cursor.length === 0)) {
     throw new Error("Invalid Notion pagination response: missing continuation cursor");
   }
-  if (!r.has_more && r.next_cursor !== null) {
-    throw new Error("Invalid Notion pagination response: terminal cursor must be null");
+  // Some endpoints have returned a stale next_cursor with has_more: false.
+  // has_more is the authoritative terminal marker; do not follow that cursor.
+  // An omitted cursor on the final page is also valid.
+  if (
+    !r.has_more &&
+    r.next_cursor !== null &&
+    r.next_cursor !== undefined &&
+    typeof r.next_cursor !== "string"
+  ) {
+    throw new Error("Invalid Notion pagination response: invalid terminal cursor type");
   }
   return {
     results: r.results as T[],
-    next_cursor: r.next_cursor as string | null,
+    next_cursor: r.has_more ? (r.next_cursor as string) : null,
     has_more: r.has_more,
   };
 }
