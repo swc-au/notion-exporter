@@ -59,19 +59,21 @@ function validCount(value: unknown): value is number {
 
 function validateExpectedInventory(manifest: Manifest, expected: readonly ExpectedSource[]): void {
   if (expected.length === 0) fail("expected source inventory is empty");
-  const identifiers = new Set<string>();
+  const identifiers = new Map<string, ExpectedSource["object"]>();
   for (const obj of expected) {
     if (!obj.id || (obj.object !== "page" && obj.object !== "database")) {
       fail("invalid expected source inventory");
     }
     if (identifiers.has(obj.id)) fail(`duplicate source ID in crawl: ${obj.id}`);
-    identifiers.add(obj.id);
+    identifiers.set(obj.id, obj.object);
   }
   if (manifest.entries.length !== expected.length) {
     fail("manifest entry count does not match the source inventory");
   }
   for (const item of manifest.entries) {
-    if (!identifiers.has(item.id)) fail(`unexpected exported source: ${item.id}`);
+    const kind = identifiers.get(item.id);
+    if (!kind) fail(`unexpected exported source: ${item.id}`);
+    if (kind !== item.kind) fail(`source kind mismatch for ${item.id}`);
   }
 }
 
