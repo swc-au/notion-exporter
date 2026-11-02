@@ -38,6 +38,14 @@ export function attachmentRequirements(raw: unknown): AttachmentRequirement[] {
     if (n.type === "callout") media((n.callout as Node | undefined)?.icon);
     if (n.type === "files" && Array.isArray(n.files)) for (const file of n.files) media(file);
     if (n.type === "mention") media(n.mention);
+    if (n.object === "comment" && Array.isArray(n.attachments)) {
+      for (const attachment of n.attachments) {
+        if (attachment && typeof attachment === "object") {
+          const file = (attachment as Node).file;
+          media({ type: "file", file });
+        }
+      }
+    }
     for (const [key, child] of Object.entries(n)) {
       if (key === "properties" && child && typeof child === "object") {
         for (const prop of Object.values(child)) walk(prop);

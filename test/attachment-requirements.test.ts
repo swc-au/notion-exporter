@@ -48,6 +48,26 @@ const emoji = {
   custom_emoji: { id: "emoji", name: "sample", url: "https://synthetic.example/emoji.png" },
 };
 const cases: Array<[string, "page" | "database", unknown]> = [
+  [
+    "comment attachment",
+    "page",
+    {
+      page: { id },
+      blocks: [],
+      comments: [
+        {
+          object: "comment",
+          id: "comment",
+          attachments: [
+            {
+              category: "image",
+              file: { url: "https://synthetic.example/comment.png", expiry_time: "later" },
+            },
+          ],
+        },
+      ],
+    },
+  ],
   ["uploaded block", "page", { page: { id }, blocks: [{ id: "b", type: "file", file: remote }] }],
   [
     "external block",

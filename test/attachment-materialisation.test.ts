@@ -234,7 +234,23 @@ vi.mock("@notionhq/client", () => {
       next_cursor: null,
     })),
     usersMe: vi.fn(async () => ({ id: "u1", name: "Bot", type: "bot" })),
-    commentsList: vi.fn(async () => ({ results: [], has_more: false, next_cursor: null })),
+    commentsList: vi.fn(async () => ({
+      results: [
+        {
+          object: "comment",
+          id: "comment-1",
+          rich_text: [],
+          attachments: [
+            {
+              category: "image",
+              file: { url: "https://signed/comment.png", expiry_time: "later" },
+            },
+          ],
+        },
+      ],
+      has_more: false,
+      next_cursor: null,
+    })),
     // Views API (GA): list → first ref is the default; retrieve → config;
     // queries.create/results → the filtered/sorted/group-ordered page ids.
     viewsList: vi.fn(async () => ({
