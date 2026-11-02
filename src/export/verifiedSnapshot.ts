@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { assertWithinRootAsync, readFileWithinRootAsync } from "../util/fs.js";
 import { collectLocalAssetPaths, validateLocalAssetPath } from "./assetReferences.js";
+import { attachmentRequirements } from "./attachmentRequirements.js";
 import { MANIFEST_SCHEMA_VERSION, type Manifest, readManifest } from "./manifest.js";
 
 export const VERIFICATION_FILE = "verification.json";
@@ -160,7 +161,12 @@ export async function verifySnapshot(
     if (crypto.createHash("sha256").update(rawText).digest("hex") !== actual.sha256) {
       fail(`raw JSON changed while checking references for ${entry.id}`);
     }
-    for (const localPath of collectLocalAssetPaths(JSON.parse(rawText))) {
+    const raw = JSON.parse(rawText);
+    for (const attachment of attachmentRequirements(raw)) {
+      if (!attachment.target.local_path)
+        fail(`required attachment has no local path for ${entry.id}`);
+    }
+    for (const localPath of collectLocalAssetPaths(raw)) {
       if (!assetPaths.has(localPath)) {
         fail(`required asset missing from manifest for ${entry.id}: ${localPath}`);
       }
