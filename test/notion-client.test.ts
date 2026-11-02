@@ -83,6 +83,18 @@ describe("notion client helpers", () => {
     ).rejects.toThrow(/missing continuation cursor/);
   });
 
+  it("aborts the export if a later page has an invalid continuation cursor", async () => {
+    const pages = [
+      { results: [1, 2], has_more: true, next_cursor: "a" },
+      { results: [3], has_more: true, next_cursor: null },
+    ];
+    let calls = 0;
+    await expect(paginate<number>(async () => pages[calls++]!)).rejects.toThrow(
+      /missing continuation cursor/,
+    );
+    expect(calls).toBe(2);
+  });
+
   it("rejects pagination cursor cycles rather than looping indefinitely", async () => {
     const pages = [
       { results: [1], has_more: true, next_cursor: "a" },
