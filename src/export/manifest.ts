@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AssetFailure, AssetRecord } from "./assets.js";
+import type { RequiredSource } from "./requiredSources.js";
 
 /**
  * Manifest schema version. Bump when the on-disk shape changes in a way
@@ -29,6 +30,7 @@ export interface ManifestEntry {
 }
 
 export interface Manifest {
+  requiredSources?: RequiredSource[];
   /** Shape version of this manifest. See {@link MANIFEST_SCHEMA_VERSION}. */
   schemaVersion: number;
   tool: { name: string; version: string };
@@ -194,6 +196,7 @@ export async function writeManifest(opts: {
   failedAssets?: AssetFailure[];
   skipped?: number;
   basedOn?: string;
+  requiredSources?: RequiredSource[];
 }): Promise<Manifest> {
   const entries: ManifestEntry[] = [];
   for (const e of opts.entries) {
@@ -223,6 +226,7 @@ export async function writeManifest(opts: {
         : {}),
     },
     ...(opts.basedOn ? { basedOn: opts.basedOn } : {}),
+    ...(opts.requiredSources ? { requiredSources: opts.requiredSources } : {}),
     entries,
     assets: opts.assets,
     ...(opts.failedAssets && opts.failedAssets.length > 0

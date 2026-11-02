@@ -35,6 +35,7 @@ const boolFromEnv = z
 
 const schema = z.object({
   NOTION_TOKEN: z.string().min(1).optional(),
+  REQUIRED_SOURCES_FILE: z.string().min(1).optional(),
   OUT_DIR: z.string().default("./exports"),
   RETENTION: z.coerce.number().int().min(0).default(0),
   ASSET_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(16),
@@ -85,6 +86,7 @@ export interface Config {
    * passed around independently via {@link requireToken}. */
   token: string | undefined;
   io: {
+    requiredSourcesFile?: string;
     outDir: string;
     retention: number;
     assetConcurrency: number;
@@ -117,6 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     token: raw.NOTION_TOKEN,
     io: {
+      requiredSourcesFile: raw.REQUIRED_SOURCES_FILE,
       outDir: raw.OUT_DIR,
       retention: raw.RETENTION,
       assetConcurrency: raw.ASSET_CONCURRENCY,

@@ -38,6 +38,11 @@ import {
   renderDatabase,
   renderPage,
 } from "../export/pipeline.js";
+import {
+  assertRequiredSources,
+  type RequiredSource,
+  readRequiredSources,
+} from "../export/requiredSources.js";
 import { applyRetention } from "../export/retention.js";
 import { plainText, type SearchDoc } from "../export/searchIndex.js";
 import { enrichTitleHtml } from "../export/titleHtml.js";
@@ -396,6 +401,7 @@ function sitemapIconFromCtxOrParse(
 // each phase reads from / writes into it. Beats a 10-arg signature on every
 // helper and keeps the orchestrator's data dependencies in one place.
 export interface PhaseContext {
+  requiredSources?: RequiredSource[];
   cfg: Config;
   log: Logger;
   paths: ExportPaths;
@@ -1178,6 +1184,7 @@ async function finalizeExport(
       writeManifest({
         exportRoot: ctx.paths.root,
         manifestPath: ctx.paths.manifest,
+        requiredSources: ctx.requiredSources,
         version: VERSION,
         timestamp: exportTimestamp,
         entries: ctx.manifestEntries,
@@ -1280,6 +1287,9 @@ export async function runExport(
   log: Logger,
   opts: ExportOptions,
 ): Promise<ExportResult> {
+  const requiredSources = cfg.io.requiredSourcesFile
+    ? await readRequiredSources(cfg.io.requiredSourcesFile)
+    : undefined;
   const token = requireToken(cfg);
   const notion = new RateLimitedNotion({
     token,
@@ -1313,6 +1323,7 @@ export async function runExport(
       : undefined,
   });
   log.info({ count: objects.length }, "discovered objects");
+  if (requiredSources) assertRequiredSources(requiredSources, objects);
 
   if (opts.dryRun) {
     for (const o of objects) {
@@ -1370,6 +1381,7 @@ export async function runExport(
     cfg.render.exportIcon;
 
   const phaseCtx: PhaseContext = {
+    requiredSources,
     cfg,
     log,
     paths,

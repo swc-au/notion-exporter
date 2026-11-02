@@ -767,6 +767,7 @@ async function writeRepairedManifest(
     assets: newAssets,
     failedAssets: remainingFailures,
     skipped: manifest.counts.skipped ?? 0,
+    requiredSources: manifest.requiredSources,
     ...(manifest.basedOn ? { basedOn: manifest.basedOn } : {}),
   });
   return remainingFailures.length;

@@ -6,6 +6,7 @@ import { assertWithinRootAsync, readFileWithinRootAsync } from "../util/fs.js";
 import { collectLocalAssetPaths, validateLocalAssetPath } from "./assetReferences.js";
 import { attachmentRequirements } from "./attachmentRequirements.js";
 import { MANIFEST_SCHEMA_VERSION, type Manifest, readManifest } from "./manifest.js";
+import { assertRequiredSources } from "./requiredSources.js";
 
 export const VERIFICATION_FILE = "verification.json";
 const STAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/;
@@ -123,6 +124,12 @@ export async function verifySnapshot(
     fail("manifest counts disagree with its inventory");
   }
   if (expected) validateExpectedInventory(manifest, expected);
+  if (manifest.requiredSources !== undefined) {
+    assertRequiredSources(
+      manifest.requiredSources,
+      manifest.entries.map((e) => ({ id: e.id, object: e.kind })),
+    );
+  }
 
   const assetPaths = new Map<string, { sha256: string; bytes: number }>();
   for (const asset of manifest.assets) {
