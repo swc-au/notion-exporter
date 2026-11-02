@@ -2,7 +2,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { fileSha256, writeManifest } from "../src/export/manifest.js";
+import { fileSha256, readManifest, writeManifest } from "../src/export/manifest.js";
 import { applyRetention } from "../src/export/retention.js";
 import {
   findVerifiedPreviousExport,
@@ -13,11 +13,12 @@ import {
 import { createLogger } from "../src/logger.js";
 
 const SOURCE = { id: "page-one", object: "page" } as const;
+const EXTRA_SOURCE = { id: "page-two", object: "page" } as const;
 
 async function fixture(
   outDir: string,
   stamp: string,
-  opts: { verify?: boolean; withAsset?: boolean; failedAsset?: boolean } = {},
+  opts: { verify?: boolean; withAsset?: boolean; failedAsset?: boolean; extraSource?: boolean } = {},
 ) {
   const root = path.join(outDir, stamp);
   const raw = path.join(root, "raw", "pages", "Page.page-one.json");
@@ -36,19 +37,30 @@ async function fixture(
       sha256: digest.sha256,
     });
   }
+  const rawExtra = path.join(root, "raw", "pages", "Extra.page-two.json");
+  if (opts.extraSource) {
+    await fsp.writeFile(rawExtra, JSON.stringify({ page: { id: EXTRA_SOURCE.id }, blocks: [] }));
+  }
   const manifestPath = path.join(root, "manifest.json");
   await writeManifest({
     exportRoot: root,
     manifestPath,
     version: "0.1.0",
     timestamp: stamp,
-    entries: [{ id: SOURCE.id, kind: "page", title: "Page", rawAbs: raw }],
+    entries: [
+      { id: SOURCE.id, kind: "page", title: "Page", rawAbs: raw },
+      ...(opts.extraSource
+        ? [{ id: EXTRA_SOURCE.id, kind: "page" as const, title: "Extra", rawAbs: rawExtra }]
+        : []),
+    ],
     assets,
     ...(opts.failedAsset
       ? { failedAssets: [{ url: "https://notion.example/fail", message: "network" }] }
       : {}),
   });
-  if (opts.verify) await markSnapshotVerified(root, [SOURCE], 0);
+  if (opts.verify) {
+    await markSnapshotVerified(root, opts.extraSource ? [SOURCE, EXTRA_SOURCE] : [SOURCE], 0);
+  }
   return { root, raw, manifestPath };
 }
 
@@ -127,6 +139,27 @@ describe("verified snapshot retention", () => {
         markSnapshotVerified(root, [{ id: SOURCE.id, object: "database" }], 0),
       ).rejects.toThrow(/source kind mismatch/);
       expect(await isVerifiedSnapshot(root)).toBe(false);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks newer snapshots that silently lose previously verified source IDs", async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-verified-drift-"));
+    try {
+      const old = await fixture(tmp, "2026-01-01T00-00-00Z", {
+        verify: true,
+        extraSource: true,
+      });
+      const newest = await fixture(tmp, "2026-02-01T00-00-00Z");
+      const previous = await readManifest(old.manifestPath);
+      expect(previous).not.toBeNull();
+      await expect(
+        markSnapshotVerified(newest.root, [SOURCE], 0, previous!),
+      ).rejects.toThrow(/previous verified inventory lost 1 source IDs/);
+      expect(await isVerifiedSnapshot(newest.root)).toBe(false);
+      expect(await applyRetention(tmp, 1, createLogger("error"))).toEqual([]);
+      expect((await findVerifiedPreviousExport(tmp))?.root).toBe(old.root);
     } finally {
       await fsp.rm(tmp, { recursive: true, force: true });
     }
