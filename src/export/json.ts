@@ -7,6 +7,7 @@ import type { RateLimitedNotion } from "../notion/client.js";
 import { asPaginatedList, paginate } from "../notion/client.js";
 import type { DiscoveredObject } from "../notion/crawl.js";
 import { type DataSourceSchema, retrieveDataSourceSchema } from "../notion/dataSourceSchema.js";
+import { hydratePageProperties } from "../notion/properties.js";
 import type { ViewWithOrder } from "../notion/views.js";
 import { createPool } from "../util/pool.js";
 import { safeSegment } from "./paths.js";
@@ -46,7 +47,8 @@ export async function fetchPageFull(
   pageId: string,
   blocksOverride?: NotionBlock[],
 ): Promise<{ page: unknown; blocks: NotionBlock[] }> {
-  const page = await notion.run((c) => c.pages.retrieve({ page_id: pageId }));
+  const retrieved = await notion.run((c) => c.pages.retrieve({ page_id: pageId }));
+  const page = await hydratePageProperties(notion, retrieved);
   const blocks = blocksOverride ?? (await fetchBlocksRecursive(notion, pageId));
   return { page, blocks };
 }
@@ -79,13 +81,17 @@ export async function queryDataSourceRows(
   notion: RateLimitedNotion,
   dataSourceId: string,
 ): Promise<unknown[]> {
-  return paginate<unknown>(async (cursor) =>
+  const rows = await paginate<unknown>(async (cursor) =>
     asPaginatedList<unknown>(
       await notion.run((c) =>
         c.dataSources.query({ data_source_id: dataSourceId, start_cursor: cursor, page_size: 100 }),
       ),
     ),
   );
+  // Preserve the data-source row shape but replace truncated page properties
+  // before any raw JSON is written or rows are reused by linked views.
+  const pool = createPool(4);
+  return Promise.all(rows.map((row) => pool.run(() => hydratePageProperties(notion, row))));
 }
 
 /** A linked-view inline block reports `data_sources: []` and zero rows; the
