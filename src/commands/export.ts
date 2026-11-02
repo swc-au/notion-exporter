@@ -37,9 +37,9 @@ import {
   renderPage,
 } from "../export/pipeline.js";
 import { applyRetention } from "../export/retention.js";
-import { findVerifiedPreviousExport, markSnapshotVerified } from "../export/verifiedSnapshot.js";
 import { plainText, type SearchDoc } from "../export/searchIndex.js";
 import { enrichTitleHtml } from "../export/titleHtml.js";
+import { findVerifiedPreviousExport, markSnapshotVerified } from "../export/verifiedSnapshot.js";
 import type { Logger } from "../logger.js";
 import type { NotionBlock } from "../notion/blocks.js";
 import { RateLimitedNotion } from "../notion/client.js";
