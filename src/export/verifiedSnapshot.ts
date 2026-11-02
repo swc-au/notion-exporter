@@ -168,15 +168,14 @@ export async function verifySnapshot(
  * before trusting such a snapshot. Legitimate deletions should be accepted
  * through an explicit future operator workflow, never inferred from absence.
  */
-export function assertNoSourceLoss(
-  expected: readonly ExpectedSource[],
-  previous?: Manifest,
-): void {
+export function assertNoSourceLoss(expected: readonly ExpectedSource[], previous?: Manifest): void {
   if (!previous) return;
   const current = new Set(expected.map((item) => item.id));
   const missing = previous.entries.filter((entry) => !current.has(entry.id));
   if (missing.length > 0) {
-    fail(`previous verified inventory lost ${missing.length} source IDs (first: ${missing[0]?.id}); investigate access or deletions before pruning`);
+    fail(
+      `previous verified inventory lost ${missing.length} source IDs (first: ${missing[0]?.id}); investigate access or deletions before pruning`,
+    );
   }
 }
 
