@@ -18,7 +18,12 @@ const EXTRA_SOURCE = { id: "page-two", object: "page" } as const;
 async function fixture(
   outDir: string,
   stamp: string,
-  opts: { verify?: boolean; withAsset?: boolean; failedAsset?: boolean; extraSource?: boolean } = {},
+  opts: {
+    verify?: boolean;
+    withAsset?: boolean;
+    failedAsset?: boolean;
+    extraSource?: boolean;
+  } = {},
 ) {
   const root = path.join(outDir, stamp);
   const raw = path.join(root, "raw", "pages", "Page.page-one.json");
@@ -154,9 +159,9 @@ describe("verified snapshot retention", () => {
       const newest = await fixture(tmp, "2026-02-01T00-00-00Z");
       const previous = await readManifest(old.manifestPath);
       expect(previous).not.toBeNull();
-      await expect(
-        markSnapshotVerified(newest.root, [SOURCE], 0, previous!),
-      ).rejects.toThrow(/previous verified inventory lost 1 source IDs/);
+      await expect(markSnapshotVerified(newest.root, [SOURCE], 0, previous!)).rejects.toThrow(
+        /previous verified inventory lost 1 source IDs/,
+      );
       expect(await isVerifiedSnapshot(newest.root)).toBe(false);
       expect(await applyRetention(tmp, 1, createLogger("error"))).toEqual([]);
       expect((await findVerifiedPreviousExport(tmp))?.root).toBe(old.root);
