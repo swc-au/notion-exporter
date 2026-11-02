@@ -69,9 +69,7 @@ describe("verified snapshot retention", () => {
       const deleted = await applyRetention(tmp, 2, createLogger("error"));
       expect(deleted).toEqual(stamps.slice(0, 2));
       const left = await fsp.readdir(tmp);
-      expect(left.sort()).toEqual(
-        [...stamps.slice(2), legacy, "not-a-stamp"].sort(),
-      );
+      expect(left.sort()).toEqual([...stamps.slice(2), legacy, "not-a-stamp"].sort());
     } finally {
       await fsp.rm(tmp, { recursive: true, force: true });
     }
