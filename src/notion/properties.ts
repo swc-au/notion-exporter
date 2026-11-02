@@ -37,6 +37,38 @@ function propertyError(pageId: string, name: string, detail: string): Error {
   return new Error(`Cannot back up property "${name}" on page ${pageId}: ${detail}`);
 }
 
+/** Property-item lists use a single value for these otherwise array-valued fields. */
+function rollupArrayValue(item: unknown, pageId: string, name: string): JsonObject {
+  if (
+    !isObject(item) ||
+    item.object !== "property_item" ||
+    typeof item.type !== "string" ||
+    !(item.type in item) ||
+    item[item.type] === undefined
+  ) {
+    throw propertyError(pageId, name, "invalid item in rollup array");
+  }
+  const type = item.type;
+  const value = item[type];
+  if (ARRAY_TYPES.has(type) && !isObject(value)) {
+    throw propertyError(pageId, name, "invalid array-valued rollup item");
+  }
+  return { type, [type]: ARRAY_TYPES.has(type) ? [value] : value };
+}
+
+function usableScalarRollup(value: unknown): value is JsonObject {
+  if (!isObject(value)) return false;
+  if (value.type === "number") {
+    return (
+      value.number === null || (typeof value.number === "number" && Number.isFinite(value.number))
+    );
+  }
+  return (
+    value.type === "date" &&
+    (value.date === null || (isObject(value.date) && typeof value.date.start === "string"))
+  );
+}
+
 /**
  * Read one complete property, following every cursor. SDK property-item
  * responses are either a single property_item (e.g. formula) or a paginated
@@ -113,6 +145,23 @@ async function retrieveCompleteProperty(
     }
     if (finalItem.rollup.type === "incomplete") {
       throw propertyError(pageId, name, "rollup aggregation remained incomplete");
+    }
+    if (finalItem.rollup.type === "unsupported") {
+      // Some functions (e.g. median) are not computed by this endpoint. Keep
+      // the page-read scalar, with the endpoint limitation and source items.
+      // An original array may be truncated, so it is not a safe fallback.
+      if (!usableScalarRollup(property.rollup)) {
+        throw propertyError(pageId, name, "unsupported rollup has no usable complete scalar value");
+      }
+      return { ...property, rollup_items: results, rollup_property_item: finalItem };
+    }
+    if (finalItem.rollup.type === "array") {
+      // show_original puts values in results; the metadata array is empty.
+      const array = results.map((item) => rollupArrayValue(item, pageId, name));
+      return { ...property, rollup: { ...finalItem.rollup, array }, rollup_items: results };
+    }
+    if (!usableScalarRollup(finalItem.rollup)) {
+      throw propertyError(pageId, name, "invalid final rollup value");
     }
     // Preserve all underlying list items: the final rollup value alone can
     // hide the source relations used to calculate the aggregate.
