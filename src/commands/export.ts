@@ -918,7 +918,11 @@ async function fetchAndRenderDatabases(
           d.rows.map((row) => localizeRowCoverIcon(row, ctx.assets, ctx.log, refreshRowPage)),
         );
       }
-      await localizeRequiredAttachments({ database: d.database, rows: d.rows }, ctx);
+      // Honour the acquisition opt-out, while sealing still refuses missing required bytes.
+      const attachmentRows = ctx.cfg.render.rowMedia
+        ? d.rows
+        : d.rows.map((row) => ({ ...(row as Record<string, unknown>), icon: null, cover: null }));
+      await localizeRequiredAttachments({ database: d.database, rows: attachmentRows }, ctx);
       // Register in dbDataById AFTER the rows have local_path so any sibling
       // page rendering off this map sees the localized references. Forward
       // the data-source schema too so the renderer can read option order

@@ -302,7 +302,7 @@ vi.mock("@notionhq/client", () => {
   return { Client };
 });
 
-it("records fresh acquisition coverage without any live boundary", async () => {
+it.each([true, false])("enforces attachment preservation with row media=%s", async (rowMedia) => {
   const outDir = await fsp.mkdtemp(path.join(os.tmpdir(), "attachment-materialisation-"));
   await fsp.mkdir(outDir, { recursive: true });
   const lookup = vi
@@ -320,11 +320,24 @@ it("records fresh acquisition coverage without any live boundary", async () => {
     });
   }) as typeof fetch;
   try {
-    const result = await runExport(
-      loadConfig({ NOTION_TOKEN: "offline_placeholder", OUT_DIR: outDir, NOTION_MIN_TIME: "0" }),
+    const pending = runExport(
+      loadConfig({
+        NOTION_TOKEN: "offline_placeholder",
+        OUT_DIR: outDir,
+        NOTION_MIN_TIME: "0",
+        EXPORT_ROW_MEDIA: String(rowMedia),
+      }),
       createLogger("error"),
       { incremental: false, resume: false, retention: 0 },
     );
+    if (!rowMedia) {
+      await expect(pending).rejects.toThrow(/required attachment has no local path/);
+      expect(requests).not.toContain("https://signed/row-cover.png");
+      expect(requests).not.toContain("https://signed/row-emoji.png");
+      expect(requests).toContain("https://signed/row-property.txt");
+      return;
+    }
+    const result = await pending;
     const stamp = (await fsp.readdir(outDir))
       .filter((x) => /^\d{4}-/.test(x))
       .sort()

@@ -188,7 +188,7 @@ starting point.
 | ------------------- | ----------- | -------------------- | ------------------------------------------------------------------------------------------------ |
 | `EXPORT_TITLE`      | string      | `Your Notion archive` | Workspace title shown in the HTML sidebar header.                                                |
 | `EXPORT_ICON`       | string      | `📚`                  | Single emoji glyph, or a path (relative to `html/`) to an image used as the sidebar icon.        |
-| `EXPORT_ROW_MEDIA`  | bool        | `true`               | Download per-row cover/icon images on databases. Set `false` to skip media on huge galleries.    |
+| `EXPORT_ROW_MEDIA`  | bool        | `true`               | Download per-row cover/icon images on databases. Set `false` to skip row icon/cover downloads. Snapshots with required row media left remote-only cannot pass preservation verification.    |
 | `EXPORT_DB_VIEW`    | enum        | `auto`               | Database view layout: `auto` (kanban when grouped by status/select, else table), `table`, or `kanban`. |
 | `EXPAND_CHILD_PAGES`| bool        | `true`               | Walk block trees to discover subpages `search` misses. Disable only if `search` already returns everything. |
 | `PRETTY_RAW_JSON`   | bool        | `true`               | Pretty-print `raw/*.json`. Set `false` for compact JSON on very large workspaces.                |
