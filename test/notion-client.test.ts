@@ -62,6 +62,20 @@ describe("notion client helpers", () => {
     ).toEqual({ results: [1, 2], has_more: false, next_cursor: null });
   });
 
+  it("ignores stale or omitted terminal cursors without dropping page results", () => {
+    const terminal = { results: [1, 2], has_more: false };
+    expect(asPaginatedList<number>({ ...terminal, next_cursor: "stale" })).toEqual({
+      results: [1, 2],
+      has_more: false,
+      next_cursor: null,
+    });
+    expect(asPaginatedList<number>(terminal)).toEqual({
+      results: [1, 2],
+      has_more: false,
+      next_cursor: null,
+    });
+  });
+
   it.each([
     ["null payload", null],
     ["array payload", []],
@@ -71,8 +85,7 @@ describe("notion client helpers", () => {
     ["non-boolean has_more", { results: [], has_more: "false", next_cursor: null }],
     ["missing continuation cursor", { results: [1], has_more: true, next_cursor: null }],
     ["empty continuation cursor", { results: [1], has_more: true, next_cursor: "" }],
-    ["missing terminal cursor", { results: [], has_more: false }],
-    ["unexpected terminal cursor", { results: [], has_more: false, next_cursor: "next" }],
+    ["invalid terminal cursor type", { results: [], has_more: false, next_cursor: 42 }],
   ])("rejects %s instead of silently truncating an export", (_case, response) => {
     expect(() => asPaginatedList(response)).toThrow(/Invalid Notion pagination response/);
   });
