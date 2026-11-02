@@ -33,7 +33,12 @@ const relationItems = (from: number, to: number) =>
     type: "relation",
     relation,
   }));
-const list = (results: unknown[], has_more = false, next_cursor: string | null = null, property_item?: unknown) => ({
+const list = (
+  results: unknown[],
+  has_more = false,
+  next_cursor: string | null = null,
+  property_item?: unknown,
+) => ({
   object: "list",
   type: "property_item",
   results,
@@ -189,12 +194,10 @@ describe("full-fidelity property items", () => {
         properties: {
           retrieve: vi.fn(async (args: PropertyRequest) =>
             args.start_cursor
-              ? list(
-                  relationItems(25, 38),
-                  false,
-                  null,
-                  { type: "rollup", rollup: { type: "number", number: 38, function: "count" } },
-                )
+              ? list(relationItems(25, 38), false, null, {
+                  type: "rollup",
+                  rollup: { type: "number", number: 38, function: "count" },
+                })
               : list(relationItems(0, 25), true, "next"),
           ),
         },
