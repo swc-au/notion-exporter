@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "../config.js";
@@ -1156,7 +1157,6 @@ async function finalizeExport(
   archiveIcon: string,
   prevExport: { root: string; manifest: Manifest } | null,
   counts: ExportCounts,
-  retention: number,
   outDir: string,
 ): Promise<{ manifest: Awaited<ReturnType<typeof writeManifest>>; failedAssetsCount: number }> {
   // Patch sitemap titleHtml from the (now complete) customEmojiByName map.
@@ -1211,7 +1211,7 @@ async function finalizeExport(
       skipped: ctx.skipIds.size,
       basedOn: manifest.basedOn,
     },
-    "export complete",
+    "content verified",
   );
   if (failedAssets.length > 0) {
     // Strip query+fragment from each sample URL — raw Notion S3 URLs carry
@@ -1224,9 +1224,6 @@ async function finalizeExport(
       },
       "some assets failed; see manifest.failedAssets for the full list",
     );
-  }
-  if (retention > 0) {
-    await applyRetention(outDir, retention, ctx.log);
   }
   return { manifest, failedAssetsCount: failedAssets.length };
 }
@@ -1340,132 +1337,160 @@ export async function runExport(
     };
   }
 
-  let paths = buildPaths(outDir);
-  let resumed = false;
-  if (opts.resume) {
-    const partial = await findPartialExport(outDir);
-    if (partial) {
-      paths = buildPaths(outDir, path.basename(partial));
-      resumed = true;
-      log.info({ root: paths.root }, "resume: continuing partial export");
-    } else {
-      log.info("resume: no partial export found, starting fresh");
+  await fsp.mkdir(outDir, { recursive: true });
+  const lockPath = path.join(outDir, ".export.lock");
+  const lock = await fsp.open(lockPath, "wx");
+  try {
+    await lock.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+    let paths = buildPaths(outDir);
+    let publicationRoot: string | undefined;
+    let resumed = false;
+    if (opts.resume) {
+      const partial = await findPartialExport(outDir);
+      if (partial) {
+        paths = buildPaths(outDir, path.basename(partial));
+        resumed = true;
+        log.info({ root: paths.root }, "resume: continuing partial export");
+      } else {
+        log.info("resume: no partial export found, starting fresh");
+      }
     }
+    if (!resumed) {
+      publicationRoot = paths.root;
+      // Exclusive empty reservation: never reuse a timestamp directory.
+      await fsp.mkdir(publicationRoot);
+      paths = buildPaths(outDir, `.staging-${crypto.randomUUID()}`);
+    }
+    await fsp.mkdir(paths.root, { recursive: true });
+    if (!resumed) log.info({ root: paths.root }, "export root created");
+
+    const skipIds = new Set<string>();
+    const prevExport = opts.incremental
+      ? await discoverIncrementalCandidates(log, outDir, paths, objects, skipIds)
+      : null;
+
+    const hierarchy = buildHierarchy(objects);
+    const pageIndex = buildPageIndex(objects, hierarchy, paths.markdown);
+    const childrenMap = buildChildrenMap(objects);
+    const byId = new Map(objects.map((o) => [o.id, o] as const));
+    const exportTimestamp = new Date().toISOString();
+    const assets = createAssetCollector({
+      assetsDir: paths.assets,
+      exportRoot: paths.root,
+      log,
+      concurrency: cfg.io.assetConcurrency,
+      onDownloaded: opts.onAsset,
+    });
+
+    // If EXPORT_ICON is a URL, download it once so the sidebar shows the
+    // workspace icon offline. Result is either a local `assets/<hash>.png`
+    // path, the raw URL fallback, or the original glyph.
+    const archiveIcon =
+      (await resolveArchiveIcon(cfg.render.exportIcon, (u) => assets.collect(u))) ??
+      cfg.render.exportIcon;
+
+    const phaseCtx: PhaseContext = {
+      requiredSources,
+      cfg,
+      log,
+      paths,
+      objects,
+      byId,
+      hierarchy,
+      pageIndex,
+      childrenMap,
+      pageIcons: new Map(),
+      assets,
+      skipIds,
+      manifestEntries: [],
+      sitemap: [],
+      searchDocs: [],
+      carriedAssets: [],
+      dbDataById: new Map(),
+      customEmojiByName: new Map(),
+      commentsDisabled: false,
+    };
+
+    await prefetchPageIcons(phaseCtx, notion);
+    if (resumed) await rehydrateResume(phaseCtx);
+    if (prevExport && skipIds.size > 0) await cloneIncremental(phaseCtx, prevExport);
+    await preloadSkippedDatabases(phaseCtx);
+
+    const renderCtx: RenderContext = {
+      paths,
+      pageIndex,
+      dbDataById: phaseCtx.dbDataById,
+      // Shared map ref — accumulated by `onPage` as new pages bring in emojis.
+      // Cross-page link titles rendered later in the run see earlier additions;
+      // sitemap titleHtml is patched in `finalizeExport` from the complete map.
+      customEmojiByName: phaseCtx.customEmojiByName,
+      archiveIcon,
+      archiveTitle: cfg.render.exportTitle,
+      cfg,
+      assets,
+      log,
+      exportTimestamp,
+      ancestorIds: (id) => ancestorIds(id, byId),
+      pageIcons: phaseCtx.pageIcons,
+    };
+
+    // Backfill views into unchanged DBs cloned from a pre-Views-API export, so
+    // a normal incremental run captures them without a costly `--force`.
+    if (prevExport && skipIds.size > 0) {
+      await backfillSkippedDatabaseViews(phaseCtx, notion, renderCtx);
+    }
+
+    const toFetch = objects.filter((o) => !skipIds.has(o.id));
+    const dbCounts = await fetchAndRenderDatabases(phaseCtx, notion, renderCtx, toFetch, opts);
+    const pageCounts = await fetchAndRenderPages(
+      phaseCtx,
+      notion,
+      renderCtx,
+      toFetch,
+      blocksCache,
+      opts,
+    );
+    const counts: ExportCounts = {
+      pages: pageCounts.pages,
+      databases: dbCounts.databases,
+      errors: dbCounts.errors + pageCounts.errors,
+    };
+
+    const { manifest } = await finalizeExport(
+      phaseCtx,
+      exportTimestamp,
+      archiveIcon,
+      prevExport,
+      counts,
+      outDir,
+    );
+
+    if (publicationRoot) {
+      await fsp.rename(paths.root, publicationRoot);
+    }
+    if (retention > 0) await applyRetention(outDir, retention, log);
+    log.info(
+      {
+        pages: manifest.counts.pages,
+        databases: manifest.counts.databases,
+        assets: manifest.counts.assets,
+        errors: counts.errors,
+      },
+      "export complete",
+    );
+    return {
+      dryRun: false,
+      objects,
+      pages: manifest.counts.pages,
+      databases: manifest.counts.databases,
+      assets: manifest.counts.assets,
+      errors: counts.errors,
+      skipped: skipIds.size,
+      basedOn: manifest.basedOn,
+      exportRoot: publicationRoot ?? paths.root,
+    };
+  } finally {
+    await lock.close();
+    await fsp.unlink(lockPath);
   }
-  await fsp.mkdir(paths.root, { recursive: true });
-  if (!resumed) log.info({ root: paths.root }, "export root created");
-
-  const skipIds = new Set<string>();
-  const prevExport = opts.incremental
-    ? await discoverIncrementalCandidates(log, outDir, paths, objects, skipIds)
-    : null;
-
-  const hierarchy = buildHierarchy(objects);
-  const pageIndex = buildPageIndex(objects, hierarchy, paths.markdown);
-  const childrenMap = buildChildrenMap(objects);
-  const byId = new Map(objects.map((o) => [o.id, o] as const));
-  const exportTimestamp = new Date().toISOString();
-  const assets = createAssetCollector({
-    assetsDir: paths.assets,
-    exportRoot: paths.root,
-    log,
-    concurrency: cfg.io.assetConcurrency,
-    onDownloaded: opts.onAsset,
-  });
-
-  // If EXPORT_ICON is a URL, download it once so the sidebar shows the
-  // workspace icon offline. Result is either a local `assets/<hash>.png`
-  // path, the raw URL fallback, or the original glyph.
-  const archiveIcon =
-    (await resolveArchiveIcon(cfg.render.exportIcon, (u) => assets.collect(u))) ??
-    cfg.render.exportIcon;
-
-  const phaseCtx: PhaseContext = {
-    requiredSources,
-    cfg,
-    log,
-    paths,
-    objects,
-    byId,
-    hierarchy,
-    pageIndex,
-    childrenMap,
-    pageIcons: new Map(),
-    assets,
-    skipIds,
-    manifestEntries: [],
-    sitemap: [],
-    searchDocs: [],
-    carriedAssets: [],
-    dbDataById: new Map(),
-    customEmojiByName: new Map(),
-    commentsDisabled: false,
-  };
-
-  await prefetchPageIcons(phaseCtx, notion);
-  if (resumed) await rehydrateResume(phaseCtx);
-  if (prevExport && skipIds.size > 0) await cloneIncremental(phaseCtx, prevExport);
-  await preloadSkippedDatabases(phaseCtx);
-
-  const renderCtx: RenderContext = {
-    paths,
-    pageIndex,
-    dbDataById: phaseCtx.dbDataById,
-    // Shared map ref — accumulated by `onPage` as new pages bring in emojis.
-    // Cross-page link titles rendered later in the run see earlier additions;
-    // sitemap titleHtml is patched in `finalizeExport` from the complete map.
-    customEmojiByName: phaseCtx.customEmojiByName,
-    archiveIcon,
-    archiveTitle: cfg.render.exportTitle,
-    cfg,
-    assets,
-    log,
-    exportTimestamp,
-    ancestorIds: (id) => ancestorIds(id, byId),
-    pageIcons: phaseCtx.pageIcons,
-  };
-
-  // Backfill views into unchanged DBs cloned from a pre-Views-API export, so
-  // a normal incremental run captures them without a costly `--force`.
-  if (prevExport && skipIds.size > 0) {
-    await backfillSkippedDatabaseViews(phaseCtx, notion, renderCtx);
-  }
-
-  const toFetch = objects.filter((o) => !skipIds.has(o.id));
-  const dbCounts = await fetchAndRenderDatabases(phaseCtx, notion, renderCtx, toFetch, opts);
-  const pageCounts = await fetchAndRenderPages(
-    phaseCtx,
-    notion,
-    renderCtx,
-    toFetch,
-    blocksCache,
-    opts,
-  );
-  const counts: ExportCounts = {
-    pages: pageCounts.pages,
-    databases: dbCounts.databases,
-    errors: dbCounts.errors + pageCounts.errors,
-  };
-
-  const { manifest } = await finalizeExport(
-    phaseCtx,
-    exportTimestamp,
-    archiveIcon,
-    prevExport,
-    counts,
-    retention,
-    outDir,
-  );
-
-  return {
-    dryRun: false,
-    objects,
-    pages: manifest.counts.pages,
-    databases: manifest.counts.databases,
-    assets: manifest.counts.assets,
-    errors: counts.errors,
-    skipped: skipIds.size,
-    basedOn: manifest.basedOn,
-    exportRoot: paths.root,
-  };
 }

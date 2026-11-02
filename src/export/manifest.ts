@@ -134,7 +134,7 @@ export async function findLatestExport(outDir: string): Promise<string | null> {
     return null;
   }
   const candidates = entries
-    .filter((e) => e.isDirectory())
+    .filter((e) => e.isDirectory() && STAMP_RE.test(e.name))
     .map((e) => e.name)
     .sort()
     .reverse();
