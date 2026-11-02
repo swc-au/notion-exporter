@@ -21,7 +21,6 @@ import {
 } from "../export/json.js";
 import {
   findPartialExport,
-  findPreviousExport,
   type Manifest,
   type ManifestInput,
   writeManifest,
@@ -38,6 +37,7 @@ import {
   renderPage,
 } from "../export/pipeline.js";
 import { applyRetention } from "../export/retention.js";
+import { findVerifiedPreviousExport, markSnapshotVerified } from "../export/verifiedSnapshot.js";
 import { plainText, type SearchDoc } from "../export/searchIndex.js";
 import { enrichTitleHtml } from "../export/titleHtml.js";
 import type { Logger } from "../logger.js";
@@ -1172,6 +1172,11 @@ async function finalizeExport(
       }),
   });
 
+  // A readable manifest is not a verified backup. Only mark the current
+  // snapshot usable after its source inventory, raw JSON, and asset hashes
+  // pass verification, and only then permit retention to run.
+  await markSnapshotVerified(ctx.paths.root, ctx.objects, counts.errors);
+
   ctx.log.info(
     {
       pages: manifest.counts.pages,
@@ -1209,7 +1214,7 @@ async function finalizeExport(
 async function previousBlocksReader(
   outDir: string,
 ): Promise<((obj: DiscoveredObject) => Promise<NotionBlock[] | null>) | undefined> {
-  const prev = await findPreviousExport(outDir);
+  const prev = await findVerifiedPreviousExport(outDir);
   if (!prev) return undefined;
   const entries = new Map(prev.manifest.entries.map((e) => [e.id, e]));
   return async (obj) => {
@@ -1235,7 +1240,7 @@ async function discoverIncrementalCandidates(
   objects: DiscoveredObject[],
   skipIds: Set<string>,
 ): Promise<{ root: string; manifest: Manifest } | null> {
-  const prevExport = await findPreviousExport(outDir, path.basename(paths.root));
+  const prevExport = await findVerifiedPreviousExport(outDir, path.basename(paths.root));
   if (!prevExport) {
     log.info("incremental: no previous export found, falling through to full");
     return null;
