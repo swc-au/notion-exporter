@@ -2,8 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { MANIFEST_SCHEMA_VERSION, readManifest, type Manifest } from "./manifest.js";
 import { assertWithinRootAsync } from "../util/fs.js";
+import { MANIFEST_SCHEMA_VERSION, type Manifest, readManifest } from "./manifest.js";
 
 export const VERIFICATION_FILE = "verification.json";
 const STAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/;
@@ -24,7 +24,7 @@ interface VerificationMarker {
 }
 
 function fail(detail: string): never {
-  throw new Error("Snapshot verification failed: " + detail);
+  throw new Error(`Snapshot verification failed: ${detail}`);
 }
 
 /**
@@ -32,14 +32,17 @@ function fail(detail: string): never {
  * comes from an operator-editable manifest, so validate containment and
  * refuse a symlink at the leaf before reading it.
  */
-async function digestFile(root: string, relative: string): Promise<{ sha256: string; bytes: number }> {
+async function digestFile(
+  root: string,
+  relative: string,
+): Promise<{ sha256: string; bytes: number }> {
   const absolute = await assertWithinRootAsync(root, relative);
   const handle = await fsp.open(absolute, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   const hash = crypto.createHash("sha256");
   let bytes = 0;
   try {
     const stat = await handle.stat();
-    if (!stat.isFile()) fail("not a regular file: " + relative);
+    if (!stat.isFile()) fail(`not a regular file: ${relative}`);
     for await (const chunk of handle.createReadStream({ autoClose: false })) {
       hash.update(chunk);
       bytes += chunk.length;
@@ -61,14 +64,14 @@ function validateExpectedInventory(manifest: Manifest, expected: readonly Expect
     if (!obj.id || (obj.object !== "page" && obj.object !== "database")) {
       fail("invalid expected source inventory");
     }
-    if (identifiers.has(obj.id)) fail("duplicate source ID in crawl: " + obj.id);
+    if (identifiers.has(obj.id)) fail(`duplicate source ID in crawl: ${obj.id}`);
     identifiers.add(obj.id);
   }
   if (manifest.entries.length !== expected.length) {
     fail("manifest entry count does not match the source inventory");
   }
   for (const item of manifest.entries) {
-    if (!identifiers.has(item.id)) fail("unexpected exported source: " + item.id);
+    if (!identifiers.has(item.id)) fail(`unexpected exported source: ${item.id}`);
   }
 }
 
@@ -133,11 +136,11 @@ export async function verifySnapshot(
       !SHA_RE.test(entry.sha256) ||
       !validCount(entry.bytes)
     ) {
-      fail("invalid raw file metadata for " + entry.id);
+      fail(`invalid raw file metadata for ${entry.id}`);
     }
     const actual = await digestFile(root, entry.rawPath);
     if (actual.bytes !== entry.bytes || actual.sha256 !== entry.sha256) {
-      fail("raw JSON checksum mismatch for " + entry.id);
+      fail(`raw JSON checksum mismatch for ${entry.id}`);
     }
   }
   for (const asset of manifest.assets) {
@@ -151,7 +154,7 @@ export async function verifySnapshot(
     }
     const actual = await digestFile(root, asset.localPath);
     if (actual.bytes !== asset.bytes || actual.sha256 !== asset.sha256) {
-      fail("asset checksum mismatch: " + asset.localPath);
+      fail(`asset checksum mismatch: ${asset.localPath}`);
     }
   }
   return manifest;
@@ -167,7 +170,7 @@ export async function markSnapshotVerified(
   expected: readonly ExpectedSource[],
   exportErrors: number,
 ): Promise<void> {
-  if (exportErrors !== 0) fail("export reported " + exportErrors + " object errors");
+  if (exportErrors !== 0) fail(`export reported ${exportErrors} object errors`);
   const manifest = await verifySnapshot(root, expected);
   const { sha256 } = await digestFile(root, "manifest.json");
   const marker: VerificationMarker = {
@@ -178,7 +181,7 @@ export async function markSnapshotVerified(
     entryCount: manifest.entries.length,
     assetCount: manifest.assets.length,
   };
-  const temp = path.join(root, ".verification-" + crypto.randomUUID() + ".tmp");
+  const temp = path.join(root, `.verification-${crypto.randomUUID()}.tmp`);
   try {
     await fsp.writeFile(temp, JSON.stringify(marker, null, 2), { flag: "wx" });
     await fsp.rename(temp, path.join(root, VERIFICATION_FILE));
@@ -203,8 +206,7 @@ export async function isVerifiedSnapshot(root: string): Promise<boolean> {
     if (sha256 !== marker.manifestSha256) return false;
     const manifest = await verifySnapshot(root);
     return (
-      manifest.entries.length === marker.entryCount &&
-      manifest.assets.length === marker.assetCount
+      manifest.entries.length === marker.entryCount && manifest.assets.length === marker.assetCount
     );
   } catch {
     return false;
@@ -226,13 +228,15 @@ export async function findVerifiedPreviousExport(
     return null;
   }
   const stamps = entries
-    .filter((entry) => entry.isDirectory() && STAMP_RE.test(entry.name) && entry.name !== excludeStamp)
+    .filter(
+      (entry) => entry.isDirectory() && STAMP_RE.test(entry.name) && entry.name !== excludeStamp,
+    )
     .map((entry) => entry.name)
     .sort()
     .reverse();
   for (const stamp of stamps) {
     const root = path.join(outDir, stamp);
-    if (!await isVerifiedSnapshot(root)) continue;
+    if (!(await isVerifiedSnapshot(root))) continue;
     const manifest = await readManifest(path.join(root, "manifest.json"));
     if (manifest) return { root, manifest };
   }
