@@ -164,7 +164,9 @@ export async function findPartialExport(
   for (const stamp of stamped) {
     const root = path.join(outDir, stamp);
     const manifest = await readManifest(path.join(root, "manifest.json"));
-    if (!manifest) return root;
+    // Fresh publication reserves an empty timestamp directory. It contains
+    // no resumable work and must never fall through to legacy in-place resume.
+    if (!manifest && (await fsp.readdir(root)).length > 0) return root;
   }
   return null;
 }

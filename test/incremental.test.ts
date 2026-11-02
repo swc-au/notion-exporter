@@ -111,6 +111,7 @@ describe("findPartialExport", () => {
     const partial = path.join(tmp, "2026-05-30T00-00-00Z");
     await fsp.mkdir(complete);
     await fsp.mkdir(partial);
+    await fsp.mkdir(path.join(partial, "raw"));
     await fsp.writeFile(
       path.join(complete, "manifest.json"),
       JSON.stringify({

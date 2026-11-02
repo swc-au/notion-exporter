@@ -338,6 +338,7 @@ it.each(["collision", "manifest crash", "publication crash", "writer lock"])(
     const cfg = loadConfig({ NOTION_TOKEN: "offline", OUT_DIR: out, NOTION_MIN_TIME: "0" });
     const opts = { incremental: false, resume: false, retention: 0 };
     try {
+      crash.text = "BEFORE_CRASH";
       const first = await runExport(cfg, createLogger("error"), opts);
       const { isVerifiedSnapshot } = await import("../src/export/verifiedSnapshot.js");
       expect(await isVerifiedSnapshot(first.exportRoot!)).toBe(true);
@@ -388,6 +389,25 @@ it.each(["collision", "manifest crash", "publication crash", "writer lock"])(
 
       expect(preserved).toBe(true);
       expect(unchanged).toBe(true);
+      if (mode === "manifest crash" || mode === "publication crash") {
+        const { findPartialExport } = await import("../src/export/manifest.js");
+        expect(await findPartialExport(out)).toBeNull();
+        vi.setSystemTime(new Date("2026-11-02T00:00:02Z"));
+        const original = fsp.rename.bind(fsp);
+        const destinations: string[] = [];
+        const publishing = vi
+          .spyOn(fsp, "rename")
+          .mockImplementation(async (...args: Parameters<typeof fsp.rename>) => {
+            if (path.basename(String(args[0])).startsWith(".staging-"))
+              destinations.push(String(args[1]));
+            return original(...args);
+          });
+        const retry = await runExport(cfg, createLogger("error"), { ...opts, resume: true });
+        publishing.mockRestore();
+        expect(destinations).toEqual([retry.exportRoot]);
+        expect(await isVerifiedSnapshot(first.exportRoot!)).toBe(true);
+        expect(await isVerifiedSnapshot(retry.exportRoot!)).toBe(true);
+      }
     } finally {
       vi.useRealTimers();
       lookup.mockRestore();
