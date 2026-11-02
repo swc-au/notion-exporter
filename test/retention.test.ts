@@ -119,6 +119,19 @@ describe("verified snapshot retention", () => {
     }
   });
 
+  it("rejects a database/page kind mismatch even when the source ID matches", async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-verified-kind-"));
+    try {
+      const { root } = await fixture(tmp, "2026-01-01T00-00-00Z");
+      await expect(
+        markSnapshotVerified(root, [{ id: SOURCE.id, object: "database" }], 0),
+      ).rejects.toThrow(/source kind mismatch/);
+      expect(await isVerifiedSnapshot(root)).toBe(false);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a corrupted raw source and does not reuse the broken snapshot", async () => {
     const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-verified-corrupt-"));
     try {
