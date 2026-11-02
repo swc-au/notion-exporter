@@ -2,6 +2,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "../config.js";
 import { requireToken } from "../config.js";
+import { collectLocalAssetPaths } from "../export/assetReferences.js";
 import type { AssetRecord } from "../export/assets.js";
 import { createAssetCollector, rewriteBlocksWithAssets, safeUrlForLog } from "../export/assets.js";
 import { finalizeSite } from "../export/finalizeAssets.js";
@@ -645,17 +646,13 @@ export async function cloneIncremental(
     const htmlSrc = prevHtmlById.get(id);
     if (htmlSrc) await cloneFile(htmlSrc, htmlDst);
 
-    // Carry asset records this page referenced. Extract every `"local_path":"..."`
-    // value from the raw JSON in one scan, then set-lookup against the prev
-    // asset map — the old substring-scan was O(assets × rawSize) per page.
+    // Use the same parsed reference inventory as snapshot verification.
     const rawText = await fsp.readFile(rawDst, "utf8");
-    const referencedPaths = new Set<string>();
-    for (const m of rawText.matchAll(/"local_path"\s*:\s*"([^"]+)"/g)) {
-      if (m[1]) referencedPaths.add(m[1]);
-    }
+    const referencedPaths = collectLocalAssetPaths(JSON.parse(rawText));
     for (const localPath of referencedPaths) {
       const rec = prevAssetByPath.get(localPath);
-      if (!rec) continue;
+      if (!rec)
+        throw new Error(`Incremental source is missing a required asset record: ${localPath}`);
       if (usedAssetPaths.has(localPath)) continue;
       await cloneFile(path.join(prevExport.root, localPath), path.join(ctx.paths.root, localPath));
       ctx.carriedAssets.push(rec);

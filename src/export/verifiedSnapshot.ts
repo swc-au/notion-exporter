@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { assertWithinRootAsync } from "../util/fs.js";
+import { assertWithinRootAsync, readFileWithinRootAsync } from "../util/fs.js";
+import { collectLocalAssetPaths, validateLocalAssetPath } from "./assetReferences.js";
 import { MANIFEST_SCHEMA_VERSION, type Manifest, readManifest } from "./manifest.js";
 
 export const VERIFICATION_FILE = "verification.json";
@@ -122,6 +123,15 @@ export async function verifySnapshot(
   }
   if (expected) validateExpectedInventory(manifest, expected);
 
+  const assetPaths = new Map<string, { sha256: string; bytes: number }>();
+  for (const asset of manifest.assets) {
+    const localPath = validateLocalAssetPath(asset.localPath);
+    const previous = assetPaths.get(localPath);
+    if (previous && (previous.sha256 !== asset.sha256 || previous.bytes !== asset.bytes)) {
+      fail(`conflicting asset records: ${localPath}`);
+    }
+    assetPaths.set(localPath, asset);
+  }
   const ids = new Set<string>();
   for (const entry of manifest.entries) {
     if (
@@ -145,6 +155,15 @@ export async function verifySnapshot(
     const actual = await digestFile(root, entry.rawPath);
     if (actual.bytes !== entry.bytes || actual.sha256 !== entry.sha256) {
       fail(`raw JSON checksum mismatch for ${entry.id}`);
+    }
+    const rawText = await readFileWithinRootAsync(root, entry.rawPath);
+    if (crypto.createHash("sha256").update(rawText).digest("hex") !== actual.sha256) {
+      fail(`raw JSON changed while checking references for ${entry.id}`);
+    }
+    for (const localPath of collectLocalAssetPaths(JSON.parse(rawText))) {
+      if (!assetPaths.has(localPath)) {
+        fail(`required asset missing from manifest for ${entry.id}: ${localPath}`);
+      }
     }
   }
   for (const asset of manifest.assets) {
