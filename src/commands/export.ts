@@ -1175,7 +1175,14 @@ async function finalizeExport(
   // A readable manifest is not a verified backup. Only mark the current
   // snapshot usable after its source inventory, raw JSON, and asset hashes
   // pass verification, and only then permit retention to run.
-  await markSnapshotVerified(ctx.paths.root, ctx.objects, counts.errors);
+  const previousVerified =
+    prevExport ?? (await findVerifiedPreviousExport(outDir, path.basename(ctx.paths.root)));
+  await markSnapshotVerified(
+    ctx.paths.root,
+    ctx.objects,
+    counts.errors,
+    previousVerified?.manifest,
+  );
 
   ctx.log.info(
     {
