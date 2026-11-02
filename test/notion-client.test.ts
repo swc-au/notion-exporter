@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  asPaginatedList,
   isRateLimitError,
   isRetryableError,
   paginate,
@@ -53,6 +54,71 @@ describe("notion client helpers", () => {
     let i = 0;
     const all = await paginate<number>(async () => pages[i++]!);
     expect(all).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("accepts a well-formed terminal API page", () => {
+    expect(
+      asPaginatedList<number>({ results: [1, 2], has_more: false, next_cursor: null }),
+    ).toEqual({ results: [1, 2], has_more: false, next_cursor: null });
+  });
+
+  it("ignores stale or omitted terminal cursors without dropping page results", () => {
+    const terminal = { results: [1, 2], has_more: false };
+    expect(asPaginatedList<number>({ ...terminal, next_cursor: "stale" })).toEqual({
+      results: [1, 2],
+      has_more: false,
+      next_cursor: null,
+    });
+    expect(asPaginatedList<number>(terminal)).toEqual({
+      results: [1, 2],
+      has_more: false,
+      next_cursor: null,
+    });
+  });
+
+  it.each([
+    ["null payload", null],
+    ["array payload", []],
+    ["missing results", { has_more: false, next_cursor: null }],
+    ["non-array results", { results: {}, has_more: false, next_cursor: null }],
+    ["missing has_more", { results: [], next_cursor: null }],
+    ["non-boolean has_more", { results: [], has_more: "false", next_cursor: null }],
+    ["missing continuation cursor", { results: [1], has_more: true, next_cursor: null }],
+    ["empty continuation cursor", { results: [1], has_more: true, next_cursor: "" }],
+    ["invalid terminal cursor type", { results: [], has_more: false, next_cursor: 42 }],
+  ])("rejects %s instead of silently truncating an export", (_case, response) => {
+    expect(() => asPaginatedList(response)).toThrow(/Invalid Notion pagination response/);
+  });
+
+  it("rejects malformed pages even when a caller bypasses asPaginatedList", async () => {
+    await expect(
+      paginate<number>(async () => ({ results: [1], has_more: true, next_cursor: null })),
+    ).rejects.toThrow(/missing continuation cursor/);
+  });
+
+  it("aborts the export if a later page has an invalid continuation cursor", async () => {
+    const pages = [
+      { results: [1, 2], has_more: true, next_cursor: "a" },
+      { results: [3], has_more: true, next_cursor: null },
+    ];
+    let calls = 0;
+    await expect(paginate<number>(async () => pages[calls++]!)).rejects.toThrow(
+      /missing continuation cursor/,
+    );
+    expect(calls).toBe(2);
+  });
+
+  it("rejects pagination cursor cycles rather than looping indefinitely", async () => {
+    const pages = [
+      { results: [1], has_more: true, next_cursor: "a" },
+      { results: [2], has_more: true, next_cursor: "b" },
+      { results: [3], has_more: true, next_cursor: "a" },
+    ];
+    let i = 0;
+    await expect(paginate<number>(async () => pages[i++]!)).rejects.toThrow(
+      /repeated continuation cursor/,
+    );
+    expect(i).toBe(3);
   });
 
   it("retries 429 then succeeds", async () => {

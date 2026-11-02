@@ -102,20 +102,41 @@ export interface PaginatedList<T> {
 }
 
 /**
- * Narrow a loosely-typed Notion list/query response to {@link PaginatedList}.
+ * Validate a Notion list/query response before trusting it as a complete
+ * snapshot. The SDK's broad response unions require a runtime shape check.
  *
- * The v5 SDK types its list responses as broad unions that don't structurally
- * match the concrete `{ results, next_cursor, has_more }` shape we read, so
- * call sites used to reach for `as unknown as { results: … }`. This is the one
- * place that cast lives: it narrows `unknown` and degrades a malformed page to
- * an empty, terminal result rather than letting a bad shape crash mid-walk.
+ * Never turn malformed or incomplete API responses into an empty terminal
+ * page: that would make a truncated backup appear successful.
  */
 export function asPaginatedList<T>(res: unknown): PaginatedList<T> {
-  const r = res as Partial<PaginatedList<T>> | null | undefined;
+  if (res === null || typeof res !== "object" || Array.isArray(res)) {
+    throw new Error("Invalid Notion pagination response: expected an object");
+  }
+  const r = res as Record<string, unknown>;
+  if (!Array.isArray(r.results)) {
+    throw new Error("Invalid Notion pagination response: results must be an array");
+  }
+  if (typeof r.has_more !== "boolean") {
+    throw new Error("Invalid Notion pagination response: has_more must be a boolean");
+  }
+  if (r.has_more && (typeof r.next_cursor !== "string" || r.next_cursor.length === 0)) {
+    throw new Error("Invalid Notion pagination response: missing continuation cursor");
+  }
+  // Some endpoints have returned a stale next_cursor with has_more: false.
+  // has_more is the authoritative terminal marker; do not follow that cursor.
+  // An omitted cursor on the final page is also valid.
+  if (
+    !r.has_more &&
+    r.next_cursor !== null &&
+    r.next_cursor !== undefined &&
+    typeof r.next_cursor !== "string"
+  ) {
+    throw new Error("Invalid Notion pagination response: invalid terminal cursor type");
+  }
   return {
-    results: Array.isArray(r?.results) ? (r.results as T[]) : [],
-    next_cursor: typeof r?.next_cursor === "string" ? r.next_cursor : null,
-    has_more: r?.has_more === true,
+    results: r.results as T[],
+    next_cursor: r.has_more ? (r.next_cursor as string) : null,
+    has_more: r.has_more,
   };
 }
 
@@ -123,11 +144,19 @@ export async function paginate<T>(
   fetchPage: (cursor: string | undefined) => Promise<PaginatedList<T>>,
 ): Promise<T[]> {
   const all: T[] = [];
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
-  do {
-    const page = await fetchPage(cursor);
+  while (true) {
+    // Also validate direct callers that don't explicitly use asPaginatedList.
+    const page = asPaginatedList<T>(await fetchPage(cursor));
     for (const r of page.results) all.push(r);
-    cursor = page.has_more && page.next_cursor ? page.next_cursor : undefined;
-  } while (cursor);
-  return all;
+    if (!page.has_more) return all;
+
+    const next = page.next_cursor as string; // guaranteed by asPaginatedList
+    if (seenCursors.has(next)) {
+      throw new Error("Invalid Notion pagination response: repeated continuation cursor");
+    }
+    seenCursors.add(next);
+    cursor = next;
+  }
 }
