@@ -206,6 +206,35 @@ describe("full-fidelity property items", () => {
     expect(roll.rollup_items).toHaveLength(38);
   });
 
+  it("rejects a data-source row when one property cannot be retrieved", async () => {
+    const notion = makeNotion({
+      pages: {
+        properties: {
+          retrieve: vi.fn(async () => {
+            throw new Error("relation access revoked");
+          }),
+        },
+      },
+      dataSources: {
+        query: vi.fn(async () => ({
+          results: [
+            {
+              id: "row-with-revoked-relation",
+              properties: {
+                Links: { id: "r", type: "relation", has_more: true, relation: relations(0, 25) },
+              },
+            },
+          ],
+          has_more: false,
+          next_cursor: null,
+        })),
+      },
+    });
+    await expect(queryDataSourceRows(notion, "source-1")).rejects.toThrow(
+      /relation access revoked/,
+    );
+  });
+
   it("fails instead of archiving a truncated relation after an incomplete API response", async () => {
     const notion = makeNotion({
       pages: {
