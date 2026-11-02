@@ -163,6 +163,24 @@ export async function verifySnapshot(
 }
 
 /**
+ * A changing Notion permission boundary can make a crawl internally complete
+ * but smaller than the last good archive. Require deliberate reconciliation
+ * before trusting such a snapshot. Legitimate deletions should be accepted
+ * through an explicit future operator workflow, never inferred from absence.
+ */
+export function assertNoSourceLoss(
+  expected: readonly ExpectedSource[],
+  previous?: Manifest,
+): void {
+  if (!previous) return;
+  const current = new Set(expected.map((item) => item.id));
+  const missing = previous.entries.filter((entry) => !current.has(entry.id));
+  if (missing.length > 0) {
+    fail(`previous verified inventory lost ${missing.length} source IDs (first: ${missing[0]?.id}); investigate access or deletions before pruning`);
+  }
+}
+
+/**
  * Explicitly seal an export only after every source file is verified and
  * the live crawl inventory and export success counts agree. A failed attempt
  * leaves its output on disk for diagnosis but cannot become a retention target.
@@ -171,8 +189,10 @@ export async function markSnapshotVerified(
   root: string,
   expected: readonly ExpectedSource[],
   exportErrors: number,
+  previous?: Manifest,
 ): Promise<void> {
   if (exportErrors !== 0) fail(`export reported ${exportErrors} object errors`);
+  assertNoSourceLoss(expected, previous);
   const manifest = await verifySnapshot(root, expected);
   const { sha256 } = await digestFile(root, "manifest.json");
   const marker: VerificationMarker = {
