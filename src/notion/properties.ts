@@ -77,10 +77,11 @@ async function retrieveCompleteProperty(
     if (first.type !== type || (type !== "formula" && type !== "rollup")) {
       throw propertyError(pageId, name, "unexpected scalar property-item type");
     }
-    if (!isObject(first[type])) {
+    const computedValue = (first as JsonObject)[type as "formula" | "rollup"];
+    if (!isObject(computedValue)) {
       throw propertyError(pageId, name, "missing computed property value");
     }
-    return { ...property, [type]: first[type] };
+    return { ...property, [type]: computedValue };
   }
 
   if (first.object !== "list" || first.type !== "property_item") {
