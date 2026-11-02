@@ -21,7 +21,10 @@ function needsFullValue(property: JsonObject): boolean {
   const type = property.type;
   if (type === "rollup" || type === "formula") return true;
   if (type === "relation") {
-    return property.has_more === true || (Array.isArray(property.relation) && property.relation.length >= 25);
+    return (
+      property.has_more === true ||
+      (Array.isArray(property.relation) && property.relation.length >= 25)
+    );
   }
   return (
     (type === "people" || type === "title" || type === "rich_text") &&
@@ -130,7 +133,11 @@ async function retrieveCompleteProperty(
   });
   const original = property[arrayType];
   if (Array.isArray(original) && complete.length < original.length) {
-    throw propertyError(pageId, name, "property shrank during export; retry for a consistent snapshot");
+    throw propertyError(
+      pageId,
+      name,
+      "property shrank during export; retry for a consistent snapshot",
+    );
   }
   return {
     ...property,
@@ -144,10 +151,7 @@ async function retrieveCompleteProperty(
  * Exporters must call this BEFORE persisting raw JSON or rendering a row.
  * All API traffic travels through RateLimitedNotion's limiter/retry path.
  */
-export async function hydratePageProperties<T>(
-  notion: RateLimitedNotion,
-  page: T,
-): Promise<T> {
+export async function hydratePageProperties<T>(notion: RateLimitedNotion, page: T): Promise<T> {
   if (!isObject(page) || !isObject(page.properties)) return page;
   const pageId = page.id;
   if (typeof pageId !== "string" || pageId.length === 0) {
