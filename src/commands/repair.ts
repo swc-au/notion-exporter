@@ -25,6 +25,7 @@ import {
 } from "../export/pipeline.js";
 import { plainText, readSearchBodies, type SearchDoc } from "../export/searchIndex.js";
 import { enrichTitleHtml } from "../export/titleHtml.js";
+import { markSnapshotVerified, verifiedMaintenanceInventory } from "../export/verifiedSnapshot.js";
 import type { Logger } from "../logger.js";
 import { FILE_BLOCK_TYPES, type NotionBlock, walkBlocks } from "../notion/blocks.js";
 import { RateLimitedNotion } from "../notion/client.js";
@@ -792,6 +793,7 @@ export async function runRepair(
 
   const manifest = await readManifest(paths.manifest, { log });
   if (!manifest) throw new Error(`failed to read manifest at ${paths.manifest}`);
+  const verifiedBefore = await verifiedMaintenanceInventory(paths.root);
 
   const assets = createAssetCollector({
     assetsDir: paths.assets,
@@ -850,6 +852,15 @@ export async function runRepair(
       return manifest;
     },
   });
+
+  if (verifiedBefore) {
+    await markSnapshotVerified(
+      paths.root,
+      verifiedBefore.entries.map((e) => ({ id: e.id, object: e.kind })),
+      stillFailing,
+      verifiedBefore,
+    );
+  }
 
   log.info({ scanned, refreshed, stillFailing }, "repair: complete");
   return { exportRoot, scanned, refreshed, stillFailing };
