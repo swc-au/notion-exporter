@@ -21,6 +21,8 @@ interface VerificationMarker {
   manifestSha256: string;
   entryCount: number;
   assetCount: number;
+  /** Original manifest bytes retain historical coverage across maintenance. */
+  sealedManifest?: string;
 }
 
 function fail(detail: string): never {
@@ -194,6 +196,10 @@ export async function markSnapshotVerified(
   assertNoSourceLoss(expected, previous);
   const manifest = await verifySnapshot(root, expected);
   const { sha256 } = await digestFile(root, "manifest.json");
+  const sealedManifest = await fsp.readFile(path.join(root, "manifest.json"), "utf8");
+  if (crypto.createHash("sha256").update(sealedManifest).digest("hex") !== sha256) {
+    fail("manifest changed while sealing");
+  }
   const marker: VerificationMarker = {
     version: 1,
     status: "verified",
@@ -201,6 +207,7 @@ export async function markSnapshotVerified(
     manifestSha256: sha256,
     entryCount: manifest.entries.length,
     assetCount: manifest.assets.length,
+    sealedManifest,
   };
   const temp = path.join(root, `.verification-${crypto.randomUUID()}.tmp`);
   try {
@@ -209,6 +216,85 @@ export async function markSnapshotVerified(
   } finally {
     await fsp.rm(temp, { force: true });
   }
+}
+
+/** Historical coverage is separate from eligibility for reuse or pruning. */
+export async function findPreviousSourceInventory(
+  outDir: string,
+  excludeStamp?: string,
+): Promise<Manifest | undefined> {
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fsp.readdir(outDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+  const stamps = entries
+    .filter((e) => e.isDirectory() && STAMP_RE.test(e.name) && e.name !== excludeStamp)
+    .map((e) => e.name)
+    .sort()
+    .reverse();
+  for (const stamp of stamps) {
+    const root = path.join(outDir, stamp);
+    let raw: string;
+    try {
+      raw = await fsp.readFile(path.join(root, VERIFICATION_FILE), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw err;
+    }
+    const marker = JSON.parse(raw) as Partial<VerificationMarker>;
+    if (
+      marker.version !== 1 ||
+      marker.status !== "verified" ||
+      !SHA_RE.test(marker.manifestSha256 ?? "")
+    ) {
+      fail(`invalid historical verification marker: ${stamp}`);
+    }
+    if (marker.sealedManifest === undefined) {
+      // Older markers have no independent history. Never silently discard one.
+      if (!(await isVerifiedSnapshot(root)))
+        fail(`cannot recover historical source inventory: ${stamp}`);
+      const manifest = await readManifest(path.join(root, "manifest.json"));
+      if (!manifest) fail(`missing historical manifest: ${stamp}`);
+      return manifest;
+    }
+    if (
+      typeof marker.sealedManifest !== "string" ||
+      crypto.createHash("sha256").update(marker.sealedManifest).digest("hex") !==
+        marker.manifestSha256
+    ) {
+      fail(`historical manifest checksum mismatch: ${stamp}`);
+    }
+    const manifest = JSON.parse(marker.sealedManifest) as Manifest;
+    if (
+      manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION ||
+      !Array.isArray(manifest.entries) ||
+      manifest.entries.length === 0 ||
+      manifest.entries.length !== marker.entryCount
+    ) {
+      fail(`invalid historical source inventory: ${stamp}`);
+    }
+    validateExpectedInventory(
+      manifest,
+      manifest.entries.map((e) => ({ id: e.id, object: e.kind })),
+    );
+    return manifest;
+  }
+  return undefined;
+}
+
+/** A maintenance command may renew only a snapshot verified before it started. */
+export async function verifiedMaintenanceInventory(root: string): Promise<Manifest | undefined> {
+  try {
+    await fsp.lstat(path.join(root, VERIFICATION_FILE));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+  if (!(await isVerifiedSnapshot(root))) fail("refusing maintenance of an invalid sealed snapshot");
+  return verifySnapshot(root);
 }
 
 /** Invalid, unverified and legacy exports are never safe to prune or reuse. */

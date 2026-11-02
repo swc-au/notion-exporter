@@ -39,7 +39,11 @@ import {
 import { applyRetention } from "../export/retention.js";
 import { plainText, type SearchDoc } from "../export/searchIndex.js";
 import { enrichTitleHtml } from "../export/titleHtml.js";
-import { findVerifiedPreviousExport, markSnapshotVerified } from "../export/verifiedSnapshot.js";
+import {
+  findPreviousSourceInventory,
+  findVerifiedPreviousExport,
+  markSnapshotVerified,
+} from "../export/verifiedSnapshot.js";
 import type { Logger } from "../logger.js";
 import type { NotionBlock } from "../notion/blocks.js";
 import { RateLimitedNotion } from "../notion/client.js";
@@ -1175,14 +1179,8 @@ async function finalizeExport(
   // A readable manifest is not a verified backup. Only mark the current
   // snapshot usable after its source inventory, raw JSON, and asset hashes
   // pass verification, and only then permit retention to run.
-  const previousVerified =
-    prevExport ?? (await findVerifiedPreviousExport(outDir, path.basename(ctx.paths.root)));
-  await markSnapshotVerified(
-    ctx.paths.root,
-    ctx.objects,
-    counts.errors,
-    previousVerified?.manifest,
-  );
+  const previousVerified = await findPreviousSourceInventory(outDir, path.basename(ctx.paths.root));
+  await markSnapshotVerified(ctx.paths.root, ctx.objects, counts.errors, previousVerified);
 
   ctx.log.info(
     {

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { fileSha256, readManifest, writeManifest } from "../src/export/manifest.js";
 import { applyRetention } from "../src/export/retention.js";
 import {
+  findPreviousSourceInventory,
   findVerifiedPreviousExport,
   isVerifiedSnapshot,
   markSnapshotVerified,
@@ -70,6 +71,90 @@ async function fixture(
 }
 
 describe("verified snapshot retention", () => {
+  it("keeps the latest sealed coverage after interrupted maintenance or raw corruption", async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-history-"));
+    try {
+      await fixture(tmp, "2026-01-01T00-00-00Z", { verify: true });
+      const latest = await fixture(tmp, "2026-02-01T00-00-00Z", {
+        verify: true,
+        extraSource: true,
+      });
+      // Simulate maintenance stopping after changing the manifest, before resealing.
+      const manifest = JSON.parse(await fsp.readFile(latest.manifestPath, "utf8"));
+      manifest.timestamp = "changed";
+      await fsp.writeFile(latest.manifestPath, JSON.stringify(manifest));
+      await fsp.writeFile(latest.raw, "corrupt");
+      expect(await isVerifiedSnapshot(latest.root)).toBe(false);
+      expect((await findVerifiedPreviousExport(tmp))?.manifest.entries).toHaveLength(1);
+      const baseline = await findPreviousSourceInventory(tmp);
+      expect(baseline?.entries).toHaveLength(2);
+      const next = await fixture(tmp, "2026-03-01T00-00-00Z");
+      await expect(markSnapshotVerified(next.root, [SOURCE], 0, baseline)).rejects.toThrow(
+        /lost 1 source IDs/,
+      );
+      expect(await applyRetention(tmp, 1, createLogger("error"))).toEqual([]);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on damaged historical evidence instead of falling back", async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-history-tamper-"));
+    try {
+      await fixture(tmp, "2026-01-01T00-00-00Z", { verify: true });
+      const latest = await fixture(tmp, "2026-02-01T00-00-00Z", {
+        verify: true,
+        extraSource: true,
+      });
+      const markerPath = path.join(latest.root, "verification.json");
+      const marker = JSON.parse(await fsp.readFile(markerPath, "utf8"));
+      marker.sealedManifest += " ";
+      await fsp.writeFile(markerPath, JSON.stringify(marker));
+      await expect(findPreviousSourceInventory(tmp)).rejects.toThrow(
+        /historical manifest checksum/,
+      );
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("supports old markers only while their manifest and files still verify", async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-old-marker-"));
+    try {
+      const old = await fixture(tmp, "2026-01-01T00-00-00Z", { verify: true });
+      const markerPath = path.join(old.root, "verification.json");
+      const marker = JSON.parse(await fsp.readFile(markerPath, "utf8"));
+      delete marker.sealedManifest;
+      await fsp.writeFile(markerPath, JSON.stringify(marker));
+      expect((await findPreviousSourceInventory(tmp))?.entries).toHaveLength(1);
+      await fsp.writeFile(old.raw, "corrupt");
+      await expect(findPreviousSourceInventory(tmp)).rejects.toThrow(/cannot recover historical/);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses rerender of a damaged sealed archive without blessing its manifest", async () => {
+    const { runRerender } = await import("../src/commands/rerender.js");
+    const { loadConfig } = await import("../src/config.js");
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-rerender-invalid-"));
+    try {
+      const old = await fixture(tmp, "2026-01-01T00-00-00Z", { verify: true });
+      const manifest = await fsp.readFile(old.manifestPath, "utf8");
+      await fsp.writeFile(old.raw, "corrupt");
+      await expect(
+        runRerender(
+          loadConfig({ NOTION_TOKEN: "offline_fake", OUT_DIR: tmp }),
+          createLogger("error"),
+          { exportRoot: old.root },
+        ),
+      ).rejects.toThrow(/invalid sealed snapshot/);
+      expect(await fsp.readFile(old.manifestPath, "utf8")).toBe(manifest);
+      expect(await isVerifiedSnapshot(old.root)).toBe(false);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
   it("prunes only the oldest fully verified snapshots and preserves legacy directories", async () => {
     const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-verified-ret-"));
     try {
@@ -238,4 +323,29 @@ describe("verified snapshot retention", () => {
       await fsp.rm(tmp, { recursive: true, force: true });
     }
   });
+});
+
+it("rerender preserves verification and blocks subsequent source loss", async () => {
+  const { runRerender } = await import("../src/commands/rerender.js");
+  const { loadConfig } = await import("../src/config.js");
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-review-rerender-"));
+  try {
+    const old = await fixture(tmp, "2026-01-01T00-00-00Z", { verify: true, extraSource: true });
+    expect(await isVerifiedSnapshot(old.root)).toBe(true);
+    await runRerender(
+      loadConfig({ NOTION_TOKEN: "offline_fake", OUT_DIR: tmp }),
+      createLogger("error"),
+      { exportRoot: old.root },
+    );
+    expect(await isVerifiedSnapshot(old.root)).toBe(true);
+    const newer = await fixture(tmp, "2026-02-01T00-00-00Z");
+    const baseline = await findPreviousSourceInventory(tmp, path.basename(newer.root));
+    expect(baseline?.entries).toHaveLength(2);
+    await expect(markSnapshotVerified(newer.root, [SOURCE], 0, baseline)).rejects.toThrow(
+      /lost 1 source IDs/,
+    );
+    expect(await isVerifiedSnapshot(newer.root)).toBe(false);
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true });
+  }
 });

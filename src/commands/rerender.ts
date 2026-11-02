@@ -18,6 +18,7 @@ import {
 } from "../export/pipeline.js";
 import { plainText, type SearchDoc } from "../export/searchIndex.js";
 import { enrichTitleHtml } from "../export/titleHtml.js";
+import { markSnapshotVerified, verifiedMaintenanceInventory } from "../export/verifiedSnapshot.js";
 import type { Logger } from "../logger.js";
 import { type NotionBlock, walkBlocks } from "../notion/blocks.js";
 import { fetchCustomEmojis } from "../notion/customEmojis.js";
@@ -378,6 +379,7 @@ export async function runRerender(
 
   const manifest = await readManifest(paths.manifest, { log });
   if (!manifest) throw new Error(`failed to read manifest at ${paths.manifest}`);
+  const verifiedBefore = await verifiedMaintenanceInventory(paths.root);
 
   // Asset collector for the one thing rerender *does* download: static Notion
   // custom-emoji icons hosted on public.notion-static.com. These URLs are not
@@ -596,6 +598,15 @@ export async function runRerender(
       return manifest;
     },
   });
+
+  if (verifiedBefore) {
+    await markSnapshotVerified(
+      paths.root,
+      verifiedBefore.entries.map((e) => ({ id: e.id, object: e.kind })),
+      0,
+      verifiedBefore,
+    );
+  }
 
   log.info({ pages, databases }, "rerender: complete");
   return { exportRoot, pages, databases };
