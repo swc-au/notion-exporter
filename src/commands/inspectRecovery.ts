@@ -63,7 +63,7 @@ export async function inspectRecovery(outDir: string) {
     await handle.close();
   }
 
-  const { stage, destination, reservation } = record;
+  const { stage, destination, reservation, stageIdentity } = record;
   if (
     record.version !== 2 ||
     typeof stage !== "string" ||
@@ -89,13 +89,22 @@ export async function inspectRecovery(outDir: string) {
     stageInfo.state === "missing" && destinationInfo.state === "directory"
       ? await inspectVerification(outDir, destination)
       : "unavailable";
+  const identity = stageIdentity as { device?: unknown; inode?: unknown } | undefined;
+  const matchesStageIdentity = (info: typeof stageInfo) =>
+    info.state === "directory" &&
+    typeof identity?.device === "string" &&
+    typeof identity?.inode === "string" &&
+    info.device === identity.device &&
+    info.inode === identity.inode;
   return {
     state: "observed-attempt",
     stage,
     destination,
     stageInfo,
+    stageIdentityMatches: matchesStageIdentity(stageInfo),
     stageVerification,
     destinationInfo,
+    destinationMatchesStageIdentity: matchesStageIdentity(destinationInfo),
     destinationVerification,
     reservationMatches:
       destinationInfo.state === "directory" &&

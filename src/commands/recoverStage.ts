@@ -16,6 +16,7 @@ export async function recoverStage(outDir: string, writerStopped: boolean) {
       !attempt.stage ||
       !attempt.destination ||
       !attempt.reservationMatches ||
+      !attempt.stageIdentityMatches ||
       attempt.stageVerification !== "verified"
     ) {
       throw new Error("Recovery requires a verified stage and its original reservation.");

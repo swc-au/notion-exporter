@@ -539,6 +539,18 @@ it.each([
         expect(await fsp.readFile(occupied, "utf8")).toBe("preserve this");
         await fsp.unlink(occupied);
 
+        const stage = path.join(out, attempt.stage!);
+        const movedStage = path.join(out, "original-stage");
+        await fsp.rename(stage, movedStage);
+        await fsp.cp(movedStage, stage, { recursive: true });
+        expect(await inspectRecovery(out)).toMatchObject({
+          stageIdentityMatches: false,
+          stageVerification: "verified",
+        });
+        await expect(recoverStage(out, true)).rejects.toThrow("original reservation");
+        await fsp.rename(stage, path.join(out, "substitute-stage"));
+        await fsp.rename(movedStage, stage);
+
         const contenders = await Promise.allSettled([
           recoverStage(out, true),
           recoverStage(out, true),
@@ -557,6 +569,7 @@ it.each([
           state: "observed-attempt",
           stageInfo: { state: "missing" },
           destinationVerification: "verified",
+          destinationMatchesStageIdentity: true,
           reservationMatches: false,
         });
         await expect(recoverStage(out, true)).rejects.toThrow(

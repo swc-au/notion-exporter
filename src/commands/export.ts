@@ -1426,27 +1426,25 @@ export async function runExport(
       publicationRoot = paths.root;
       paths = buildPaths(outDir, `.staging-${crypto.randomUUID()}`);
     }
-    // Capture the reserved directory's identity before any stage writes.
-    // An interruption before this record is complete leaves ambiguous state.
-    let reservation: { device: string; inode: string } | undefined;
+    // Bind both directories before writing staged content. An interruption
+    // before the record is complete leaves ambiguous state for inspection.
     if (publicationRoot) {
-      // Exclusive empty reservation: never reuse a timestamp directory.
       await fsp.mkdir(publicationRoot);
-      const identity = await fsp.lstat(publicationRoot, { bigint: true });
-      reservation = { device: identity.dev.toString(), inode: identity.ino.toString() };
-    }
-    await lock.write(
-      publicationRoot
-        ? {
-            stage: path.basename(paths.root),
-            destination: path.basename(publicationRoot),
-            reservation,
-          }
-        : { resume: path.basename(paths.root) },
-    );
-    if (publicationRoot) {
       await fsp.mkdir(paths.root);
+      const [reservation, stageIdentity] = await Promise.all(
+        [publicationRoot, paths.root].map(async (directory) => {
+          const info = await fsp.lstat(directory, { bigint: true });
+          return { device: info.dev.toString(), inode: info.ino.toString() };
+        }),
+      );
+      await lock.write({
+        stage: path.basename(paths.root),
+        destination: path.basename(publicationRoot),
+        reservation,
+        stageIdentity,
+      });
     } else {
+      await lock.write({ resume: path.basename(paths.root) });
       await fsp.mkdir(paths.root, { recursive: true });
     }
     if (!resumed) log.info({ root: paths.root }, "export root created");
