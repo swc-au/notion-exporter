@@ -26,6 +26,7 @@ import {
 import { plainText, readSearchBodies, type SearchDoc } from "../export/searchIndex.js";
 import { enrichTitleHtml } from "../export/titleHtml.js";
 import { markSnapshotVerified, verifiedMaintenanceInventory } from "../export/verifiedSnapshot.js";
+import { acquireWriterLock } from "../export/writerLock.js";
 import type { Logger } from "../logger.js";
 import { FILE_BLOCK_TYPES, type NotionBlock, walkBlocks } from "../notion/blocks.js";
 import { RateLimitedNotion } from "../notion/client.js";
@@ -768,6 +769,7 @@ async function writeRepairedManifest(
     failedAssets: remainingFailures,
     skipped: manifest.counts.skipped ?? 0,
     requiredSources: manifest.requiredSources,
+    deletionApproval: manifest.deletionApproval,
     ...(manifest.basedOn ? { basedOn: manifest.basedOn } : {}),
   });
   return remainingFailures.length;
@@ -778,6 +780,16 @@ export async function runRepair(
   log: Logger,
   opts: RepairOptions = {},
 ): Promise<RepairResult> {
+  const lock = await acquireWriterLock(cfg.io.outDir);
+  try {
+    await lock.write({ operation: "repair" });
+    return await repairLocked(cfg, log, opts);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function repairLocked(cfg: Config, log: Logger, opts: RepairOptions): Promise<RepairResult> {
   const token = requireToken(cfg);
   const notion = new RateLimitedNotion({
     token,
