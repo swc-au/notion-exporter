@@ -4,10 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { runExport } from "../src/commands/export.js";
+import { inspectRecovery } from "../src/commands/inspectRecovery.js";
+import { recoverStage } from "../src/commands/recoverStage.js";
+import { runRepair } from "../src/commands/repair.js";
+import { runRerender } from "../src/commands/rerender.js";
 import { loadConfig } from "../src/config.js";
 import { createLogger } from "../src/logger.js";
 
-const crash = vi.hoisted(() => ({ text: "BEFORE_CRASH" }));
+const crash = vi.hoisted(() => ({ text: "BEFORE_CRASH", omit: [] as string[] }));
 
 // Mock the Notion SDK Client so the integration test doesn't hit the network.
 vi.mock("@notionhq/client", () => {
@@ -35,7 +39,7 @@ vi.mock("@notionhq/client", () => {
           title: [{ plain_text: "Tasks" }],
           parent: { type: "page_id", page_id: "page-1" },
         },
-      ],
+      ].filter(({ id }) => !crash.omit.includes(id)),
       has_more: false,
       next_cursor: null,
     })),
@@ -320,100 +324,283 @@ vi.mock("@notionhq/client", () => {
   return { Client };
 });
 
-it.each(["collision", "manifest crash", "publication crash", "writer lock"])(
-  "preserves prior snapshot after %s",
-  async (mode) => {
-    const out = await fsp.mkdtemp(path.join(os.tmpdir(), "ss89-collision-"));
-    const oldFetch = global.fetch;
-    const lookup = vi
-      .spyOn(dns.promises, "lookup")
-      .mockRejectedValue(Object.assign(new Error("offline"), { code: "ENOTFOUND" }));
-    global.fetch = (async () =>
-      new Response("synthetic", {
-        status: 200,
-        headers: { "content-type": "text/plain" },
-      })) as typeof fetch;
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-11-02T00:00:00Z"));
-    const cfg = loadConfig({ NOTION_TOKEN: "offline", OUT_DIR: out, NOTION_MIN_TIME: "0" });
-    const opts = { incremental: false, resume: false, retention: 0 };
-    try {
-      crash.text = "BEFORE_CRASH";
-      const first = await runExport(cfg, createLogger("error"), opts);
-      const { isVerifiedSnapshot } = await import("../src/export/verifiedSnapshot.js");
-      expect(await isVerifiedSnapshot(first.exportRoot!)).toBe(true);
-      const before = new Map<string, string>();
-      const manifest = JSON.parse(
-        await fsp.readFile(path.join(first.exportRoot!, "manifest.json"), "utf8"),
+it.each([
+  "collision",
+  "manifest crash",
+  "publication crash",
+  "writer lock",
+  "legacy media",
+  "approved deletion",
+])("preserves prior snapshot after %s", async (mode) => {
+  const out = await fsp.mkdtemp(path.join(os.tmpdir(), "ss89-collision-"));
+  const oldFetch = global.fetch;
+  const lookup = vi
+    .spyOn(dns.promises, "lookup")
+    .mockRejectedValue(Object.assign(new Error("offline"), { code: "ENOTFOUND" }));
+  global.fetch = (async () =>
+    new Response("synthetic", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    })) as typeof fetch;
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-02T00:00:00Z"));
+  const cfg = loadConfig({ NOTION_TOKEN: "offline", OUT_DIR: out, NOTION_MIN_TIME: "0" });
+  const opts = { incremental: false, resume: false, retention: 0 };
+  try {
+    crash.text = "BEFORE_CRASH";
+    const first = await runExport(cfg, createLogger("error"), opts);
+    const { isVerifiedSnapshot } = await import("../src/export/verifiedSnapshot.js");
+    expect(await isVerifiedSnapshot(first.exportRoot!)).toBe(true);
+    const before = new Map<string, string>();
+    const manifest = JSON.parse(
+      await fsp.readFile(path.join(first.exportRoot!, "manifest.json"), "utf8"),
+    );
+    for (const e of manifest.entries)
+      before.set(e.rawPath, await fsp.readFile(path.join(first.exportRoot!, e.rawPath), "utf8"));
+    expect((await fsp.readdir(out)).some((name) => name.startsWith(".staging-"))).toBe(false);
+    crash.text = "AFTER_CRASH";
+    if (mode === "writer lock") {
+      const lockPath = path.join(out, ".export.lock");
+      await fsp.writeFile(lockPath, "other writer owns this lock");
+      for (const maintain of [runRepair, runRerender]) {
+        await expect(maintain(cfg, createLogger("error"))).rejects.toMatchObject({
+          code: "EEXIST",
+        });
+      }
+      expect(await fsp.readFile(lockPath, "utf8")).toBe("other writer owns this lock");
+    }
+    if (mode === "approved deletion") {
+      const baseline = JSON.parse(
+        await fsp.readFile(path.join(first.exportRoot!, "verification.json"), "utf8"),
       );
-      for (const e of manifest.entries)
-        before.set(e.rawPath, await fsp.readFile(path.join(first.exportRoot!, e.rawPath), "utf8"));
-      expect((await fsp.readdir(out)).some((name) => name.startsWith(".staging-"))).toBe(false);
-      crash.text = "AFTER_CRASH";
-      if (mode === "writer lock")
-        await fsp.writeFile(path.join(out, ".export.lock"), "other writer owns this lock");
-      if (mode !== "collision") vi.setSystemTime(new Date("2026-11-02T00:00:01Z"));
-      const originalRename = fsp.rename.bind(fsp);
-      const renaming = vi
+      const approval = path.join(out, "approval.json");
+      await fsp.writeFile(
+        approval,
+        JSON.stringify({
+          version: 1,
+          baselineSha256: baseline.manifestSha256,
+          missing: [{ id: "page-2", object: "page" }],
+          requiredSources: [],
+        }),
+      );
+      const approved = { ...opts, deletionApprovalFile: approval };
+      crash.omit = ["page-2"];
+      vi.setSystemTime(new Date("2026-11-01T23:59:59Z"));
+      await expect(runExport(cfg, createLogger("error"), approved)).rejects.toThrow(
+        "destination must be newer",
+      );
+
+      crash.omit = ["page-2", "db-1"];
+      vi.setSystemTime(new Date("2026-11-02T00:00:01Z"));
+      await expect(runExport(cfg, createLogger("error"), approved)).rejects.toThrow(
+        "exact missing sources",
+      );
+      crash.omit = ["page-2"];
+      const requiredFile = path.join(out, "required.json");
+      await fsp.writeFile(requiredFile, JSON.stringify([{ id: "page-2", object: "page" }]));
+      await expect(
+        runExport(
+          { ...cfg, io: { ...cfg.io, requiredSourcesFile: requiredFile } },
+          createLogger("error"),
+          approved,
+        ),
+      ).rejects.toThrow("Required source missing or wrong kind");
+      await expect(
+        runExport(cfg, createLogger("error"), { ...approved, retention: 1 }),
+      ).rejects.toThrow("explicit retention 0");
+
+      vi.setSystemTime(new Date("2026-11-02T00:00:02Z"));
+      const result = await runExport(cfg, createLogger("error"), approved);
+      expect(await isVerifiedSnapshot(result.exportRoot!)).toBe(true);
+      expect(await isVerifiedSnapshot(first.exportRoot!)).toBe(true);
+      const reconciled = JSON.parse(
+        await fsp.readFile(path.join(result.exportRoot!, "manifest.json"), "utf8"),
+      );
+      expect(reconciled.deletionApproval).toEqual(JSON.parse(await fsp.readFile(approval, "utf8")));
+      expect(reconciled.entries.map((entry: { id: string }) => entry.id)).not.toContain("page-2");
+      vi.setSystemTime(new Date("2026-11-02T00:00:03Z"));
+      await expect(runExport(cfg, createLogger("error"), approved)).rejects.toThrow(
+        "latest sealed baseline",
+      );
+      return;
+    }
+    if (mode === "legacy media") {
+      const partial = path.join(out, "2026-11-02T00-00-01Z");
+      const raw = path.join(partial, "raw", "pages");
+      await fsp.mkdir(raw, { recursive: true });
+      const record = path.join(raw, "page.json");
+      const original = JSON.stringify({ blocks: [{ local_path: "assets/example.png" }] });
+      await fsp.writeFile(record, original);
+      await expect(
+        runExport(cfg, createLogger("error"), { ...opts, resume: true }),
+      ).rejects.toThrow("Legacy partial contains local media without asset records");
+      expect(await fsp.readFile(record, "utf8")).toBe(original);
+      expect(await fsp.readdir(partial)).toEqual(["raw"]);
+      expect(await isVerifiedSnapshot(first.exportRoot!)).toBe(true);
+      return;
+    }
+    if (mode !== "collision") vi.setSystemTime(new Date("2026-11-02T00:00:01Z"));
+    let publicationLock: unknown;
+    const originalRename = fsp.rename.bind(fsp);
+    const renaming = vi
+      .spyOn(fsp, "rename")
+      .mockImplementation(async (...args: Parameters<typeof fsp.rename>) => {
+        if (
+          mode === "publication crash" &&
+          path.basename(String(args[0])).startsWith(".staging-")
+        ) {
+          publicationLock = JSON.parse(await fsp.readFile(path.join(out, ".export.lock"), "utf8"));
+          const reserved = await fsp.lstat(args[1], { bigint: true });
+          expect(publicationLock).toMatchObject({
+            version: 2,
+            reservation: { device: reserved.dev.toString(), inode: reserved.ino.toString() },
+            pid: process.pid,
+            hostname: os.hostname(),
+            stage: path.basename(String(args[0])),
+            destination: path.basename(String(args[1])),
+          });
+          expect(await inspectRecovery(out)).toMatchObject({
+            state: "observed-attempt",
+            reservationMatches: true,
+            stageVerification: "verified",
+          });
+          const stageManifest = path.join(String(args[0]), "manifest.json");
+          const sealed = await fsp.readFile(stageManifest);
+          await fsp.appendFile(stageManifest, " ");
+          expect(await inspectRecovery(out)).toMatchObject({
+            reservationMatches: true,
+            stageVerification: "unverified",
+          });
+          await fsp.writeFile(stageManifest, sealed);
+          throw new Error("injected publication crash");
+        }
+        return originalRename(...args);
+      });
+    const originalWrite = fsp.writeFile.bind(fsp);
+    const writing = vi
+      .spyOn(fsp, "writeFile")
+      .mockImplementation(async (...args: Parameters<typeof fsp.writeFile>) => {
+        if (mode === "manifest crash" && String(args[0]).endsWith("/manifest.json"))
+          throw new Error("injected manifest write crash");
+        return originalWrite(...args);
+      });
+    if (mode === "publication crash") {
+      await expect(runExport(cfg, createLogger("error"), opts)).rejects.toThrow(
+        "injected publication crash",
+      );
+    } else {
+      await expect(runExport(cfg, createLogger("error"), opts)).rejects.toThrow();
+    }
+    writing.mockRestore();
+    renaming.mockRestore();
+    const { findLatestExport } = await import("../src/export/manifest.js");
+    const { findVerifiedPreviousExport } = await import("../src/export/verifiedSnapshot.js");
+    const { applyRetention } = await import("../src/export/retention.js");
+    expect(await findLatestExport(out)).toBe(first.exportRoot);
+    expect((await findVerifiedPreviousExport(out))?.root).toBe(first.exportRoot);
+    expect(await applyRetention(out, 1, createLogger("error"))).toEqual([]);
+    const preserved = await isVerifiedSnapshot(first.exportRoot!);
+    let unchanged = true;
+    for (const [rel, text] of before)
+      if ((await fsp.readFile(path.join(first.exportRoot!, rel), "utf8")) !== text)
+        unchanged = false;
+
+    expect(preserved).toBe(true);
+    expect(unchanged).toBe(true);
+    if (mode === "manifest crash" || mode === "publication crash") {
+      const { findPartialExport } = await import("../src/export/manifest.js");
+      expect(await findPartialExport(out)).toBeNull();
+      vi.setSystemTime(new Date("2026-11-02T00:00:02Z"));
+      const original = fsp.rename.bind(fsp);
+      const destinations: string[] = [];
+      const publishing = vi
         .spyOn(fsp, "rename")
         .mockImplementation(async (...args: Parameters<typeof fsp.rename>) => {
-          if (
-            mode === "publication crash" &&
-            path.basename(String(args[0])).startsWith(".staging-")
-          )
-            throw new Error("injected publication crash");
-          return originalRename(...args);
+          if (path.basename(String(args[0])).startsWith(".staging-"))
+            destinations.push(String(args[1]));
+          return original(...args);
         });
-      const originalWrite = fsp.writeFile.bind(fsp);
-      const writing = vi
-        .spyOn(fsp, "writeFile")
-        .mockImplementation(async (...args: Parameters<typeof fsp.writeFile>) => {
-          if (mode === "manifest crash" && String(args[0]).endsWith("/manifest.json"))
-            throw new Error("injected manifest write crash");
-          return originalWrite(...args);
-        });
-      await expect(runExport(cfg, createLogger("error"), opts)).rejects.toThrow();
-      writing.mockRestore();
-      renaming.mockRestore();
-      const { findLatestExport } = await import("../src/export/manifest.js");
-      const { findVerifiedPreviousExport } = await import("../src/export/verifiedSnapshot.js");
-      const { applyRetention } = await import("../src/export/retention.js");
-      expect(await findLatestExport(out)).toBe(first.exportRoot);
-      expect((await findVerifiedPreviousExport(out))?.root).toBe(first.exportRoot);
-      expect(await applyRetention(out, 1, createLogger("error"))).toEqual([]);
-      const preserved = await isVerifiedSnapshot(first.exportRoot!);
-      let unchanged = true;
-      for (const [rel, text] of before)
-        if ((await fsp.readFile(path.join(first.exportRoot!, rel), "utf8")) !== text)
-          unchanged = false;
+      const retry = await runExport(cfg, createLogger("error"), { ...opts, resume: true });
+      publishing.mockRestore();
+      expect(destinations).toEqual([retry.exportRoot]);
+      expect(await isVerifiedSnapshot(first.exportRoot!)).toBe(true);
+      expect(await isVerifiedSnapshot(retry.exportRoot!)).toBe(true);
+      if (mode === "publication crash") {
+        // The injected exception unwinds normally. Restore the lock that a
+        // terminated process would have left behind.
+        const writerLock = path.join(out, ".export.lock");
+        await fsp.writeFile(writerLock, JSON.stringify(publicationLock), { flag: "wx" });
+        await expect(recoverStage(out, false)).rejects.toThrow("Confirm the original writer");
+        const attempt = await inspectRecovery(out);
+        const destination = path.join(out, attempt.destination!);
+        const occupied = path.join(destination, "occupied");
+        await fsp.writeFile(occupied, "preserve this");
+        await expect(recoverStage(out, true)).rejects.toThrow("must be empty");
+        expect(await fsp.readFile(occupied, "utf8")).toBe("preserve this");
+        await fsp.unlink(occupied);
 
-      expect(preserved).toBe(true);
-      expect(unchanged).toBe(true);
-      if (mode === "manifest crash" || mode === "publication crash") {
-        const { findPartialExport } = await import("../src/export/manifest.js");
-        expect(await findPartialExport(out)).toBeNull();
-        vi.setSystemTime(new Date("2026-11-02T00:00:02Z"));
-        const original = fsp.rename.bind(fsp);
-        const destinations: string[] = [];
-        const publishing = vi
-          .spyOn(fsp, "rename")
-          .mockImplementation(async (...args: Parameters<typeof fsp.rename>) => {
-            if (path.basename(String(args[0])).startsWith(".staging-"))
-              destinations.push(String(args[1]));
-            return original(...args);
-          });
-        const retry = await runExport(cfg, createLogger("error"), { ...opts, resume: true });
-        publishing.mockRestore();
-        expect(destinations).toEqual([retry.exportRoot]);
+        const stage = path.join(out, attempt.stage!);
+        const markerPath = path.join(stage, "verification.json");
+        const markerBytes = await fsp.readFile(markerPath, "utf8");
+        const marker = JSON.parse(markerBytes);
+        marker.sealedManifest += " ";
+        await fsp.writeFile(markerPath, JSON.stringify(marker));
+        expect(await inspectRecovery(out)).toMatchObject({
+          stageIdentityMatches: true,
+          stageVerification: "unverified",
+        });
+        await expect(recoverStage(out, true)).rejects.toThrow("original reservation");
+        expect(await fsp.readdir(destination)).toEqual([]);
+        await fsp.writeFile(markerPath, markerBytes);
+        const movedStage = path.join(out, "original-stage");
+        await fsp.rename(stage, movedStage);
+        await fsp.cp(movedStage, stage, { recursive: true });
+        expect(await inspectRecovery(out)).toMatchObject({
+          stageIdentityMatches: false,
+          stageVerification: "verified",
+        });
+        await expect(recoverStage(out, true)).rejects.toThrow("original reservation");
+        await fsp.rename(stage, path.join(out, "substitute-stage"));
+        await fsp.rename(movedStage, stage);
+
+        const contenders = await Promise.allSettled([
+          recoverStage(out, true),
+          recoverStage(out, true),
+        ]);
+        expect(contenders.filter((result) => result.status === "fulfilled")).toEqual([
+          { status: "fulfilled", value: destination },
+        ]);
+        const rejected = contenders.find((result) => result.status === "rejected");
+        expect(rejected?.reason).toMatchObject({ code: "EEXIST" });
+        expect(await inspectRecovery(out)).toEqual({ state: "no-lock" });
+        expect(await isVerifiedSnapshot(destination)).toBe(true);
+        // Model termination after publication and before writer lock cleanup.
+        await fsp.writeFile(writerLock, JSON.stringify(publicationLock), { flag: "wx" });
+        const retainedLock = await fsp.readFile(writerLock);
+        expect(await inspectRecovery(out)).toMatchObject({
+          state: "observed-attempt",
+          stageInfo: { state: "missing" },
+          destinationVerification: "verified",
+          destinationMatchesStageIdentity: true,
+          reservationMatches: false,
+        });
+        await expect(recoverStage(out, true)).rejects.toThrow(
+          "requires a verified stage and its original reservation",
+        );
+        expect(await fsp.readFile(writerLock)).toEqual(retainedLock);
+        expect(await isVerifiedSnapshot(destination)).toBe(true);
         expect(await isVerifiedSnapshot(first.exportRoot!)).toBe(true);
-        expect(await isVerifiedSnapshot(retry.exportRoot!)).toBe(true);
+        for (const [relative, text] of before) {
+          expect(await fsp.readFile(path.join(first.exportRoot!, relative), "utf8")).toBe(text);
+        }
       }
-    } finally {
-      vi.useRealTimers();
-      lookup.mockRestore();
-      global.fetch = oldFetch;
-      vi.restoreAllMocks();
-      await fsp.rm(out, { recursive: true, force: true });
     }
-  },
-);
+  } finally {
+    crash.omit = [];
+    vi.useRealTimers();
+    lookup.mockRestore();
+    global.fetch = oldFetch;
+    vi.restoreAllMocks();
+    await fsp.rm(out, { recursive: true, force: true });
+  }
+});

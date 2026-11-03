@@ -251,10 +251,10 @@ export async function markSnapshotVerified(
 }
 
 /** Historical coverage is separate from eligibility for reuse or pruning. */
-export async function findPreviousSourceInventory(
+export async function findPreviousSourceBaseline(
   outDir: string,
   excludeStamp?: string,
-): Promise<Manifest | undefined> {
+): Promise<{ manifest: Manifest; sha256: string; stamp: string } | undefined> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fsp.readdir(outDir, { withFileTypes: true });
@@ -280,7 +280,8 @@ export async function findPreviousSourceInventory(
     if (
       marker.version !== 1 ||
       marker.status !== "verified" ||
-      !SHA_RE.test(marker.manifestSha256 ?? "")
+      typeof marker.manifestSha256 !== "string" ||
+      !SHA_RE.test(marker.manifestSha256)
     ) {
       fail(`invalid historical verification marker: ${stamp}`);
     }
@@ -290,7 +291,7 @@ export async function findPreviousSourceInventory(
         fail(`cannot recover historical source inventory: ${stamp}`);
       const manifest = await readManifest(path.join(root, "manifest.json"));
       if (!manifest) fail(`missing historical manifest: ${stamp}`);
-      return manifest;
+      return { manifest, sha256: marker.manifestSha256, stamp };
     }
     if (
       typeof marker.sealedManifest !== "string" ||
@@ -312,9 +313,16 @@ export async function findPreviousSourceInventory(
       manifest,
       manifest.entries.map((e) => ({ id: e.id, object: e.kind })),
     );
-    return manifest;
+    return { manifest, sha256: marker.manifestSha256, stamp };
   }
   return undefined;
+}
+
+export async function findPreviousSourceInventory(
+  outDir: string,
+  excludeStamp?: string,
+): Promise<Manifest | undefined> {
+  return (await findPreviousSourceBaseline(outDir, excludeStamp))?.manifest;
 }
 
 /** A maintenance command may renew only a snapshot verified before it started. */
@@ -337,7 +345,16 @@ export async function isVerifiedSnapshot(root: string): Promise<boolean> {
     if (
       marker.version !== 1 ||
       marker.status !== "verified" ||
-      !SHA_RE.test(marker.manifestSha256 ?? "")
+      typeof marker.manifestSha256 !== "string" ||
+      !SHA_RE.test(marker.manifestSha256)
+    ) {
+      return false;
+    }
+    if (
+      marker.sealedManifest !== undefined &&
+      (typeof marker.sealedManifest !== "string" ||
+        crypto.createHash("sha256").update(marker.sealedManifest).digest("hex") !==
+          marker.manifestSha256)
     ) {
       return false;
     }

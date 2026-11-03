@@ -7,6 +7,11 @@ import { collectLocalAssetPaths } from "../export/assetReferences.js";
 import type { AssetRecord } from "../export/assets.js";
 import { createAssetCollector, rewriteBlocksWithAssets, safeUrlForLog } from "../export/assets.js";
 import { attachmentRequirements } from "../export/attachmentRequirements.js";
+import {
+  type DeletionApproval,
+  readDeletionApproval,
+  reconcileDeletion,
+} from "../export/deletionApproval.js";
 import { finalizeSite } from "../export/finalizeAssets.js";
 import type { SitemapEntry } from "../export/html.js";
 import {
@@ -48,10 +53,12 @@ import { applyRetention } from "../export/retention.js";
 import { plainText, type SearchDoc } from "../export/searchIndex.js";
 import { enrichTitleHtml } from "../export/titleHtml.js";
 import {
+  findPreviousSourceBaseline,
   findPreviousSourceInventory,
   findVerifiedPreviousExport,
   markSnapshotVerified,
 } from "../export/verifiedSnapshot.js";
+import { acquireWriterLock } from "../export/writerLock.js";
 import type { Logger } from "../logger.js";
 import type { NotionBlock } from "../notion/blocks.js";
 import { RateLimitedNotion } from "../notion/client.js";
@@ -75,6 +82,7 @@ export interface ExportOptions {
   dryRun: boolean;
   outDir?: string;
   retention?: number;
+  deletionApprovalFile?: string;
   incremental?: boolean;
   resume?: boolean;
   onProgress?: (e: ProgressEvent) => void;
@@ -480,6 +488,42 @@ async function prefetchPageIcons(ctx: PhaseContext, notion?: RateLimitedNotion):
       }
     }),
   );
+}
+
+/**
+ * Legacy partials have no manifest to bind local media to asset records.
+ * Check their raw files before downloading anything into the partial.
+ */
+async function assertLegacyResumeHasNoMedia(paths: ExportPaths): Promise<void> {
+  for (const directory of [
+    paths.root,
+    paths.raw,
+    ...[RAW_PAGES, RAW_DATABASES].map((kind) => path.join(paths.raw, kind)),
+  ]) {
+    const info = await fsp.lstat(directory).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (info && !info.isDirectory())
+      throw new Error("Legacy partial contains an unexpected directory type.");
+  }
+  for (const kind of [RAW_PAGES, RAW_DATABASES]) {
+    const directory = path.join(paths.raw, kind);
+    const files = await fsp.readdir(directory, { withFileTypes: true }).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    });
+    for (const file of files) {
+      if (!file.name.endsWith(".json")) continue;
+      if (!file.isFile()) throw new Error("Legacy partial contains an unexpected raw file type.");
+      const raw = JSON.parse(await fsp.readFile(path.join(directory, file.name), "utf8"));
+      if (collectLocalAssetPaths(raw).size > 0) {
+        throw new Error(
+          "Legacy partial contains local media without asset records. Use a fresh export into a separate output directory.",
+        );
+      }
+    }
+  }
 }
 
 // --- Phase: resume rehydrate ------------------------------------------------
@@ -1158,6 +1202,8 @@ async function finalizeExport(
   prevExport: { root: string; manifest: Manifest } | null,
   counts: ExportCounts,
   outDir: string,
+  deletionApproval?: DeletionApproval,
+  publicationRoot?: string,
 ): Promise<{ manifest: Awaited<ReturnType<typeof writeManifest>>; failedAssetsCount: number }> {
   // Patch sitemap titleHtml from the (now complete) customEmojiByName map.
   // Without this, sidebar/index entries for pages whose `:slug:` shortcode
@@ -1172,6 +1218,15 @@ async function finalizeExport(
   }
   const allAssets = [...ctx.assets.records(), ...ctx.carriedAssets];
   const failedAssets = ctx.assets.failures();
+  const baseline = deletionApproval
+    ? await findPreviousSourceBaseline(outDir, path.basename(ctx.paths.root))
+    : undefined;
+  if (baseline && (!publicationRoot || path.basename(publicationRoot) <= baseline.stamp)) {
+    throw new Error("Deletion reconciliation destination must be newer than its sealed baseline.");
+  }
+  const reconciledBaseline = deletionApproval
+    ? reconcileDeletion(deletionApproval, baseline, ctx.objects, ctx.requiredSources ?? [])
+    : undefined;
   const manifest = await finalizeSite({
     htmlDir: ctx.paths.html,
     rawDir: ctx.paths.raw,
@@ -1185,6 +1240,7 @@ async function finalizeExport(
         exportRoot: ctx.paths.root,
         manifestPath: ctx.paths.manifest,
         requiredSources: ctx.requiredSources,
+        deletionApproval,
         version: VERSION,
         timestamp: exportTimestamp,
         entries: ctx.manifestEntries,
@@ -1198,7 +1254,9 @@ async function finalizeExport(
   // A readable manifest is not a verified backup. Only mark the current
   // snapshot usable after its source inventory, raw JSON, and asset hashes
   // pass verification, and only then permit retention to run.
-  const previousVerified = await findPreviousSourceInventory(outDir, path.basename(ctx.paths.root));
+  const previousVerified =
+    reconciledBaseline ??
+    (await findPreviousSourceInventory(outDir, path.basename(ctx.paths.root)));
   await markSnapshotVerified(ctx.paths.root, ctx.objects, counts.errors, previousVerified);
 
   ctx.log.info(
@@ -1298,6 +1356,16 @@ export async function runExport(
   const outDir = opts.outDir ?? cfg.io.outDir;
   const retention = opts.retention ?? cfg.io.retention;
 
+  if (
+    opts.deletionApprovalFile &&
+    (opts.dryRun || opts.resume !== false || opts.incremental !== false || opts.retention !== 0)
+  ) {
+    throw new Error("Deletion approval requires a fresh export with explicit retention 0.");
+  }
+  const deletionApproval = opts.deletionApprovalFile
+    ? await readDeletionApproval(opts.deletionApprovalFile)
+    : undefined;
+
   log.info("crawling workspace");
   // Notion's search endpoint only returns pages the integration has direct
   // access to. Walk block trees so we also pick up subpages (child_page blocks)
@@ -1338,10 +1406,8 @@ export async function runExport(
   }
 
   await fsp.mkdir(outDir, { recursive: true });
-  const lockPath = path.join(outDir, ".export.lock");
-  const lock = await fsp.open(lockPath, "wx");
+  const lock = await acquireWriterLock(outDir);
   try {
-    await lock.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
     let paths = buildPaths(outDir);
     let publicationRoot: string | undefined;
     let resumed = false;
@@ -1349,6 +1415,7 @@ export async function runExport(
       const partial = await findPartialExport(outDir);
       if (partial) {
         paths = buildPaths(outDir, path.basename(partial));
+        await assertLegacyResumeHasNoMedia(paths);
         resumed = true;
         log.info({ root: paths.root }, "resume: continuing partial export");
       } else {
@@ -1357,11 +1424,29 @@ export async function runExport(
     }
     if (!resumed) {
       publicationRoot = paths.root;
-      // Exclusive empty reservation: never reuse a timestamp directory.
-      await fsp.mkdir(publicationRoot);
       paths = buildPaths(outDir, `.staging-${crypto.randomUUID()}`);
     }
-    await fsp.mkdir(paths.root, { recursive: true });
+    // Bind both directories before writing staged content. An interruption
+    // before the record is complete leaves ambiguous state for inspection.
+    if (publicationRoot) {
+      await fsp.mkdir(publicationRoot);
+      await fsp.mkdir(paths.root);
+      const [reservation, stageIdentity] = await Promise.all(
+        [publicationRoot, paths.root].map(async (directory) => {
+          const info = await fsp.lstat(directory, { bigint: true });
+          return { device: info.dev.toString(), inode: info.ino.toString() };
+        }),
+      );
+      await lock.write({
+        stage: path.basename(paths.root),
+        destination: path.basename(publicationRoot),
+        reservation,
+        stageIdentity,
+      });
+    } else {
+      await lock.write({ resume: path.basename(paths.root) });
+      await fsp.mkdir(paths.root, { recursive: true });
+    }
     if (!resumed) log.info({ root: paths.root }, "export root created");
 
     const skipIds = new Set<string>();
@@ -1463,6 +1548,8 @@ export async function runExport(
       prevExport,
       counts,
       outDir,
+      deletionApproval,
+      publicationRoot,
     );
 
     if (publicationRoot) {
@@ -1490,7 +1577,6 @@ export async function runExport(
       exportRoot: publicationRoot ?? paths.root,
     };
   } finally {
-    await lock.close();
-    await fsp.unlink(lockPath);
+    await lock.release();
   }
 }

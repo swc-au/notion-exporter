@@ -19,6 +19,7 @@ import {
 import { plainText, type SearchDoc } from "../export/searchIndex.js";
 import { enrichTitleHtml } from "../export/titleHtml.js";
 import { markSnapshotVerified, verifiedMaintenanceInventory } from "../export/verifiedSnapshot.js";
+import { acquireWriterLock } from "../export/writerLock.js";
 import type { Logger } from "../logger.js";
 import { type NotionBlock, walkBlocks } from "../notion/blocks.js";
 import { fetchCustomEmojis } from "../notion/customEmojis.js";
@@ -370,6 +371,20 @@ export async function runRerender(
   cfg: Config,
   log: Logger,
   opts: RerenderOptions = {},
+): Promise<RerenderResult> {
+  const lock = await acquireWriterLock(cfg.io.outDir);
+  try {
+    await lock.write({ operation: "rerender" });
+    return await rerenderLocked(cfg, log, opts);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function rerenderLocked(
+  cfg: Config,
+  log: Logger,
+  opts: RerenderOptions,
 ): Promise<RerenderResult> {
   const exportRoot = opts.exportRoot ?? (await findLatestExport(cfg.io.outDir));
   if (!exportRoot) throw new Error("no export found to rerender");

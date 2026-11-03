@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AssetFailure, AssetRecord } from "./assets.js";
+import type { DeletionApproval } from "./deletionApproval.js";
 import type { RequiredSource } from "./requiredSources.js";
 
 /**
@@ -31,6 +32,7 @@ export interface ManifestEntry {
 
 export interface Manifest {
   requiredSources?: RequiredSource[];
+  deletionApproval?: DeletionApproval;
   /** Shape version of this manifest. See {@link MANIFEST_SCHEMA_VERSION}. */
   schemaVersion: number;
   tool: { name: string; version: string };
@@ -199,6 +201,7 @@ export async function writeManifest(opts: {
   skipped?: number;
   basedOn?: string;
   requiredSources?: RequiredSource[];
+  deletionApproval?: DeletionApproval;
 }): Promise<Manifest> {
   const entries: ManifestEntry[] = [];
   for (const e of opts.entries) {
@@ -229,6 +232,7 @@ export async function writeManifest(opts: {
     },
     ...(opts.basedOn ? { basedOn: opts.basedOn } : {}),
     ...(opts.requiredSources ? { requiredSources: opts.requiredSources } : {}),
+    ...(opts.deletionApproval ? { deletionApproval: opts.deletionApproval } : {}),
     entries,
     assets: opts.assets,
     ...(opts.failedAssets && opts.failedAssets.length > 0
