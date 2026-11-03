@@ -350,6 +350,14 @@ export async function isVerifiedSnapshot(root: string): Promise<boolean> {
     ) {
       return false;
     }
+    if (
+      marker.sealedManifest !== undefined &&
+      (typeof marker.sealedManifest !== "string" ||
+        crypto.createHash("sha256").update(marker.sealedManifest).digest("hex") !==
+          marker.manifestSha256)
+    ) {
+      return false;
+    }
     const { sha256 } = await digestFile(root, "manifest.json");
     if (sha256 !== marker.manifestSha256) return false;
     const manifest = await verifySnapshot(root);

@@ -540,6 +540,18 @@ it.each([
         await fsp.unlink(occupied);
 
         const stage = path.join(out, attempt.stage!);
+        const markerPath = path.join(stage, "verification.json");
+        const markerBytes = await fsp.readFile(markerPath, "utf8");
+        const marker = JSON.parse(markerBytes);
+        marker.sealedManifest += " ";
+        await fsp.writeFile(markerPath, JSON.stringify(marker));
+        expect(await inspectRecovery(out)).toMatchObject({
+          stageIdentityMatches: true,
+          stageVerification: "unverified",
+        });
+        await expect(recoverStage(out, true)).rejects.toThrow("original reservation");
+        expect(await fsp.readdir(destination)).toEqual([]);
+        await fsp.writeFile(markerPath, markerBytes);
         const movedStage = path.join(out, "original-stage");
         await fsp.rename(stage, movedStage);
         await fsp.cp(movedStage, stage, { recursive: true });
