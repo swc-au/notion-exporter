@@ -236,6 +236,81 @@ describe("pipeline.pagePropertiesRow: formatProp output gets HTML-escaped", () =
     await fsp.rm(tmp, { recursive: true, force: true });
   });
 
+  it("renders a nested row with local media and safe URL properties", async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ne-props-xss-"));
+    await fsp.mkdir(path.join(tmp, "assets"), { recursive: true });
+    await fsp.mkdir(path.join(tmp, "markdown"), { recursive: true });
+    await fsp.mkdir(path.join(tmp, "html"), { recursive: true });
+
+    const cfg = loadConfig({ NOTION_TOKEN: "secret_x", OUT_DIR: tmp });
+    const log = createLogger("error");
+    const paths = buildPaths(path.dirname(tmp), path.basename(tmp));
+    const assets = createAssetCollector({
+      assetsDir: paths.assets,
+      exportRoot: paths.root,
+      log,
+      concurrency: 1,
+    });
+
+    const pageId = "props-page-id-aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const pageIndex = new Map([
+      [
+        pageId,
+        {
+          id: pageId,
+          title: "Row",
+          kind: "page" as const,
+          mdAbsPath: path.join(paths.markdown, "section", `Row.${pageId}.md`),
+          subdir: "section",
+        },
+      ],
+    ]);
+
+    const ctx: RenderContext = {
+      paths,
+      pageIndex,
+      dbDataById: new Map(),
+      customEmojiByName: new Map(),
+      archiveIcon: cfg.render.exportIcon,
+      archiveTitle: cfg.render.exportTitle,
+      cfg,
+      assets,
+      log,
+      exportTimestamp: "2025-01-02T00:00:00.000Z",
+      ancestorIds: () => [],
+    };
+
+    const rawPage = {
+      id: pageId,
+      parent: { type: "database_id", database_id: "db-id" },
+      properties: {
+        Name: { type: "title", title: [{ plain_text: "Row" }] },
+        Source: { type: "url", url: "https://example.com/source.md" },
+      },
+    };
+
+    const rendered = await renderPage(
+      ctx,
+      {
+        id: pageId,
+        title: "Row",
+        page: rawPage,
+        blocks: [{ id: "image-id", type: "image", image: { local_path: "assets/photo.jpg" } }],
+      },
+      { formatProp },
+    );
+    expect(rendered).not.toBeNull();
+    const html = await fsp.readFile(rendered!.htmlAbs, "utf8");
+    const md = await fsp.readFile(rendered!.mdAbs, "utf8");
+    expect(md).toContain("![](../../assets/photo.jpg)");
+    expect(html).toContain('src="../../assets/photo.jpg"');
+    expect(html).toContain(
+      '<a href="https://example.com/source.md">https://example.com/source.md</a>',
+    );
+
+    await fsp.rm(tmp, { recursive: true, force: true });
+  });
+
   it("escapes a malicious property NAME (column header) too", async () => {
     // The name comes from `Object.entries(p.properties)`, which is the
     // operator-controlled property key. `renderPropertyTable` already runs

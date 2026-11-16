@@ -209,13 +209,14 @@ export function basenameFromUrl(src: string): string {
   }
 }
 
-export function resolveFileSrc(data: Record<string, unknown>): string {
-  const local = data.local_path as string | undefined;
+export function resolveFileSrc(data: Record<string, unknown>, assetPrefix = ""): string {
+  const local = (data.local_path as string | undefined)?.replace(/\\/g, "/");
   const external = (data as { external?: { url?: string } }).external?.url;
   const file = (data as { file?: { url?: string } }).file?.url;
   // local_path is a relative web src; normalize Windows "\" separators to "/"
   // (raw JSON produced on Windows stores backslashes). External/file are URLs.
-  return (local ? local.replace(/\\/g, "/") : null) ?? external ?? file ?? "";
+  if (local) return local.startsWith("assets/") ? assetPrefix + local : local;
+  return external ?? file ?? "";
 }
 
 export function formatDate(iso: string): string {

@@ -471,7 +471,7 @@ function fileBlockParts(s: BlockRenderState): {
   //      when src is a content-hashed local path like assets/abc123.pdf)
   //   4. the basename of the source itself
   //   5. the block type as a last resort
-  const src = resolveFileSrc(s.data);
+  const src = resolveFileSrc(s.data, s.ctx.assetPrefix);
   const f = s.data as {
     name?: string;
     file?: { url?: string };
@@ -579,7 +579,7 @@ const RENDERERS: Record<string, BlockRenderer> = {
         if (c.type === "image" && cardLink?.href) {
           const img = c.image as Record<string, unknown> & { caption?: RichText };
           const alt = rt(img.caption as RichText, s.resolveLink);
-          const src = safeLinkUrl(resolveFileSrc(img));
+          const src = safeLinkUrl(resolveFileSrc(img, s.ctx.assetPrefix));
           // `[![alt](src)](href)` → marked emits `<a href><img></a>`.
           return `[![${alt}](${mdUrl(src)})](${mdUrl(safeLinkUrl(cardLink.href))})`;
         }
@@ -606,20 +606,20 @@ const RENDERERS: Record<string, BlockRenderer> = {
   },
   divider: () => "---",
   image: (s) =>
-    `![${rt(s.data.caption as RichText, s.resolveLink)}](${mdUrl(safeLinkUrl(resolveFileSrc(s.data)))})`,
+    `![${rt(s.data.caption as RichText, s.resolveLink)}](${mdUrl(safeLinkUrl(resolveFileSrc(s.data, s.ctx.assetPrefix)))})`,
   audio: (s) => {
     // Render an inline <audio> player. Caption is optional; when present it
     // sits under the player inside the same <figure>. `safeLinkUrl` defense-in-
     // depth gates `data:`/custom-scheme srcs even though browsers don't execute
     // `javascript:` here. `preload="metadata"` keeps duration UI working
     // without eagerly fetching the full file.
-    const src = safeLinkUrl(resolveFileSrc(s.data));
+    const src = safeLinkUrl(resolveFileSrc(s.data, s.ctx.assetPrefix));
     const caption = rt(s.data.caption as RichText, s.resolveLink);
     const figcap = caption ? `<figcaption>${caption}</figcaption>` : "";
     return `<figure class="media audio"><audio controls preload="metadata" src="${mdUrl(src)}"></audio>${figcap}</figure>`;
   },
   video: (s) => {
-    const src = safeLinkUrl(resolveFileSrc(s.data));
+    const src = safeLinkUrl(resolveFileSrc(s.data, s.ctx.assetPrefix));
     const caption = rt(s.data.caption as RichText, s.resolveLink);
     const figcap = caption ? `<figcaption>${caption}</figcaption>` : "";
     return `<figure class="media video"><video controls preload="metadata" src="${mdUrl(src)}"></video>${figcap}</figure>`;
