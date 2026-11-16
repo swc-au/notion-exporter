@@ -25,6 +25,7 @@ import type { AssetCollector } from "./assets.js";
 import { writeHtml } from "./html.js";
 import { escapeHtmlText as attrEsc } from "./htmlEscape.js";
 import { buildMarkdownOptions } from "./markdown/types.js";
+import { mdUrl, safeLinkUrl } from "./markdown/util.js";
 import {
   type ChildDatabaseData,
   databaseToMarkdown,
@@ -380,6 +381,10 @@ function pagePropertiesRow(
       // pass it through without running the regex (saves work + avoids a
       // double-process if relation HTML ever grew bracketed body text).
       safeValue = mdLinksToAnchors(formatted);
+    } else if (type === "url") {
+      const href = safeLinkUrl(formatted);
+      const label = attrEsc(formatted);
+      safeValue = href === "#" ? label : `<a href="${attrEsc(mdUrl(href))}">${label}</a>`;
     } else if (HTML_EMITTING_PROP_TYPES.has(type)) {
       safeValue = formatted;
     } else {
@@ -456,6 +461,7 @@ export async function renderPage(
     titleHtml,
   };
   const services: RenderServices = {
+    assetPrefix: `${relUrl(fromDir, ctx.paths.root)}/`,
     resolveLink,
     childDatabases,
     dbView: ctx.cfg.render.dbView,

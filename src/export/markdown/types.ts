@@ -147,6 +147,8 @@ export type ResolveLink = (id: string) => PageLink | null;
  * per-page data) and `PageChrome` (caller-prepared markup data).
  */
 export interface RenderServices {
+  /** Relative prefix from the document directory to the snapshot root. */
+  assetPrefix?: string;
   /** Resolve a Notion page/database id to a link relative to the current file. Return null if unknown. */
   resolveLink?: ResolveLink;
   /** Inline data for child_database blocks; rendered as a live-style table. */
@@ -205,6 +207,7 @@ export interface HeadingEntry {
 }
 
 export interface RenderCtx {
+  assetPrefix?: string;
   resolveLink?: ResolveLink;
   headings?: HeadingEntry[];
   childDatabases?: Map<string, ChildDatabaseData>;

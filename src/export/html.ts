@@ -152,7 +152,10 @@ export function renderHtml(title: string, markdown: string, opts: RenderOpts = {
   body = body.replace(/(?<=[\s<])(src|href|data)="assets\//g, `$1="${assets}assets/`);
   // Cross-page links are emitted as .md paths in the markdown layer; swap to .html
   // so they resolve correctly when viewed from the html/ output.
-  body = body.replace(/href="([^"]+)\.md(#[^"]*)?"/g, 'href="$1.html$2"');
+  body = body.replace(
+    /href="((?![a-z][a-z0-9+.-]*:|\/\/)[^"]+)\.md(#[^"]*)?"/gi,
+    'href="$1.html$2"',
+  );
   // Opt-in: paragraphs containing a single ↩️ link get tagged so the
   // stylesheet can render them as a back-button. Matches the leading-↩️
   // convention some Notion users employ to provide an explicit "Back to

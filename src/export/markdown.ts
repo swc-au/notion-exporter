@@ -171,6 +171,7 @@ export function pageToMarkdown(page: ExportedPage, opts: MarkdownOptions = {}): 
   // Two walks → one walk over `page.blocks`.
   const { headings, childPageIds, childDbIds } = collectPageMeta(page.blocks, opts.resolveLink);
   const ctx: RenderCtx = {
+    assetPrefix: opts.assetPrefix,
     resolveLink: opts.resolveLink,
     headings,
     childDatabases: opts.childDatabases,
